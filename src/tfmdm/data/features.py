@@ -57,21 +57,31 @@ def build_views(
     encoded = pd.DataFrame(matrix, columns=list(encoder.get_feature_names_out()))
     encoded["target"] = y.to_numpy()
 
-    paths.DATA_PROCESSED.mkdir(parents=True, exist_ok=True)
-    joblib.dump({"encoder": encoder, "numeric": numeric, "categorical": categorical},
-                paths.transformer(cfg.dataset.name))
+    split_seed = int(cfg.split.seed)
+    path = paths.transformer(cfg.dataset.name, split_seed)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump({"encoder": encoder, "numeric": numeric, "categorical": categorical}, path)
     return {"raw": raw, "encoded": encoded}
 
 
 def write(cfg: DictConfig, views: dict[str, pd.DataFrame]) -> None:
+    split_seed = int(cfg.split.seed)
     for name, frame in views.items():
-        frame.to_parquet(paths.view(cfg.dataset.name, name), index=False)
+        path = paths.view(cfg.dataset.name, name, split_seed)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        frame.to_parquet(path, index=False)
 
 
-def load_view(dataset: str, name: str) -> pd.DataFrame:
+def load_view(dataset: str, name: str, split_seed: int) -> pd.DataFrame:
+    """Load a feature view.
+
+    Both views live under the split directory. ``raw`` does not strictly depend on the
+    partition, but duplicating a few megabytes per split keeps every read uniform and
+    makes it impossible to pair one split's encoder with another split's rows.
+    """
     if name not in VIEWS:
         raise ValueError(f"Unknown view {name!r}; expected one of {VIEWS}")
-    return pd.read_parquet(paths.view(dataset, name))
+    return pd.read_parquet(paths.view(dataset, name, split_seed))
 
 
 def xy(frame: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray]:

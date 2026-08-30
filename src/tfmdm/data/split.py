@@ -1,8 +1,12 @@
-"""Phase 1.3 -- one frozen stratified 60/20/20 partition (decision D1).
+"""Phase 1.3 -- a stratified 60/20/20 partition, frozen within a split seed (D1).
 
 Ambiguity and discrepancy are disagreement rates over a *common* set of test points,
-so the test set must be identical across all 30 seeds and all arms. Seed-to-seed
-variation enters through the bootstrap resample of train (seeds.py), not here.
+so within one split the test set is identical across all 30 run seeds and both arms.
+Run-to-run variation enters through the bootstrap resample of train (seeds.py).
+
+Repeating the whole experiment at several split seeds is the outer robustness loop:
+each split is a self-contained replicate, and its artifacts live in their own
+directory so replicates can never be mixed.
 """
 
 from __future__ import annotations
@@ -93,11 +97,18 @@ def write(cfg: DictConfig, split: SplitIndex, report: dict) -> None:
         "val": split.val.tolist(),
         "test": split.test.tolist(),
     }
-    paths.splits(cfg.dataset.name).write_text(json.dumps(payload))
+    path = paths.splits(cfg.dataset.name, int(cfg.split.seed))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload))
 
 
-def load_splits(dataset: str) -> SplitIndex:
-    payload = json.loads(paths.splits(dataset).read_text())
+def load_splits(dataset: str, split_seed: int) -> SplitIndex:
+    payload = json.loads(paths.splits(dataset, split_seed).read_text())
+    if int(payload["split_seed"]) != int(split_seed):
+        raise AssertionError(
+            f"{dataset}: splits file under split{split_seed} records split_seed="
+            f"{payload['split_seed']}. Regenerate it with `tfmdm data`."
+        )
     return SplitIndex(
         np.asarray(payload["train"], dtype=int),
         np.asarray(payload["val"], dtype=int),

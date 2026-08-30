@@ -10,9 +10,9 @@ from tfmdm.data import features as features_mod
 from tfmdm.data import split as split_mod
 
 
-def _cfg():
+def _cfg(split_seed: int = 0):
     return OmegaConf.create({
-        "split": {"seed": 0, "train": 0.6, "val": 0.2, "test": 0.2},
+        "split": {"seed": split_seed, "train": 0.6, "val": 0.2, "test": 0.2},
         "dataset": {
             "name": "synthetic",
             "numeric": ["x1", "x2"],
@@ -49,6 +49,17 @@ def test_split_is_deterministic_across_calls():
     first, _ = split_mod.make_splits(_cfg(), frame)
     second, _ = split_mod.make_splits(_cfg(), frame)
     assert np.array_equal(first.test, second.test)
+
+
+def test_different_split_seeds_give_different_partitions():
+    """The outer robustness loop is only meaningful if the replicates actually differ."""
+    frame = _frame(n=900)
+    a, _ = split_mod.make_splits(_cfg(0), frame)
+    b, _ = split_mod.make_splits(_cfg(1), frame)
+    assert not np.array_equal(a.test, b.test)
+    # ...but each is still a valid, balanced partition of the same rows.
+    assert a.test.size == b.test.size
+    assert set(a.train) | set(a.val) | set(a.test) == set(b.train) | set(b.val) | set(b.test)
 
 
 def test_encoder_is_fit_on_train_only():

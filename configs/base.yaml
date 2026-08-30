@@ -1,11 +1,17 @@
 project: tfm-distill-multiplicity
 entity: null                 # W&B entity; null -> user default
 
-seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
-        20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+# The 30 run seeds. Each drives one stratified bootstrap of train plus the learner's
+# own initialisation; the resulting 30 models are what multiplicity is measured over.
+model_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+              20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
 
 split:
-  seed: 0                    # D1: one frozen partition shared by every run
+  # D1: within one split seed the partition is frozen and shared by every run.
+  # `seeds` lists the outer replicates; `seed` is the primary one, used when a
+  # command is run without --split-seed.
+  seed: 0
+  seeds: [0, 1, 2, 3, 4]
   train: 0.6
   val: 0.2
   test: 0.2
