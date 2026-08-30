@@ -27,13 +27,13 @@ def _teacher_fn(cfg):
     return fn
 
 
-def run(dataset: str, allow_dirty: bool = False) -> dict:
-    paths.ensure_dirs()
+def run(dataset: str, split_seed: int, allow_dirty: bool = False) -> dict:
+    paths.ensure_dirs(split_seed)
     provenance.guard_clean_tree(allow_dirty)
 
-    cfg = load(dataset)
-    frame = features_mod.load_view(dataset, "raw")
-    split = load_splits(dataset)
+    cfg = load(dataset, split_seed=split_seed)
+    frame = features_mod.load_view(dataset, "raw", split_seed)
+    split = load_splits(dataset, split_seed)
     x, y = features_mod.xy(frame)
 
     x_train, y_train = x.iloc[split.train].reset_index(drop=True), y[split.train]
@@ -58,13 +58,13 @@ def run(dataset: str, allow_dirty: bool = False) -> dict:
         "prob": result.oof_probs,
         "fold": result.fold_ids,
         "hard_label": y_train,
-    }).to_parquet(paths.soft_train(dataset, TEACHER), index=False)
+    }).to_parquet(paths.soft_train(dataset, split_seed, TEACHER), index=False)
 
     pd.DataFrame({
         "row_index": split.val,
         "prob": val_probs,
         "hard_label": y[split.val],
-    }).to_parquet(paths.soft_val(dataset, TEACHER), index=False)
+    }).to_parquet(paths.soft_val(dataset, split_seed, TEACHER), index=False)
 
     from ..metrics import performance
 
@@ -73,17 +73,19 @@ def run(dataset: str, allow_dirty: bool = False) -> dict:
     diagnostics.update({f"oof_{k}": v for k, v in performance(y_train, result.oof_probs).items()})
     diagnostics["n_train"] = int(len(x_train))
     diagnostics["teacher"] = TEACHER
+    diagnostics["split_seed"] = split_seed
 
-    (paths.SOFTLABELS / f"{dataset}_{TEACHER}_diagnostics.json").write_text(
+    paths.soft_diagnostics(dataset, split_seed, TEACHER).write_text(
         json.dumps(diagnostics, indent=2, default=float)
     )
 
     with wandb_logger.run(
-        name=f"softlabels-{dataset}",
+        name=f"softlabels-{dataset}-sp{split_seed}",
         group=f"{dataset}-softlabels",
         job_type="softlabels",
-        config={"dataset": dataset, "teacher": TEACHER, **provenance.collect()},
-        tags=["phase2"],
+        config={"dataset": dataset, "teacher": TEACHER, "split_seed": split_seed,
+                **provenance.collect()},
+        tags=["phase2", dataset, f"split{split_seed}"],
     ) as handle:
         handle.log({k: v for k, v in diagnostics.items() if isinstance(v, (int, float))})
 

@@ -25,17 +25,18 @@ MODEL_NAME = "tabicl"
 ARM_NAME = "incontext"
 
 
-def run(dataset: str, seed: int, *, allow_dirty: bool = False, overwrite: bool = False) -> dict:
-    out_path = paths.preds(dataset, MODEL_NAME, ARM_NAME, seed)
+def run(dataset: str, seed: int, split_seed: int, *, allow_dirty: bool = False,
+        overwrite: bool = False) -> dict:
+    out_path = paths.preds(dataset, MODEL_NAME, ARM_NAME, seed, split_seed)
     if out_path.exists() and not overwrite:
         return {"status": "skipped", "path": str(out_path)}
 
-    paths.ensure_dirs()
+    paths.ensure_dirs(split_seed)
     provenance.guard_clean_tree(allow_dirty)
 
-    cfg = load(dataset)
-    frame = features_mod.load_view(dataset, "raw")
-    split = load_splits(dataset)
+    cfg = load(dataset, split_seed=split_seed)
+    frame = features_mod.load_view(dataset, "raw", split_seed)
+    split = load_splits(dataset, split_seed)
     x, y = features_mod.xy(frame)
 
     x_train, y_train = x.iloc[split.train].reset_index(drop=True), y[split.train]
@@ -57,24 +58,25 @@ def run(dataset: str, seed: int, *, allow_dirty: bool = False, overwrite: bool =
     metrics["context_rows"] = int(len(ctx_x))
 
     with wandb_logger.run(
-        name=f"{dataset}-tabicl-incontext-s{seed}",
-        group=f"{dataset}-tabicl",
+        name=f"{dataset}-tabicl-incontext-sp{split_seed}-s{seed}",
+        group=f"{dataset}-tabicl-sp{split_seed}",
         job_type=ARM_NAME,
         config={"dataset": dataset, "model": MODEL_NAME, "arm": ARM_NAME, "seed": seed,
-                "backend": backend.name, **provenance.collect(paths.processed(dataset))},
-        tags=["phase2", dataset, "tabicl"],
+                "split_seed": split_seed, "backend": backend.name,
+                **provenance.collect(paths.processed(dataset))},
+        tags=["phase2", dataset, "tabicl", f"split{split_seed}"],
     ) as handle:
         handle.log(metrics)
 
     return {"status": "ok", "path": str(out_path), **metrics}
 
 
-def probe(dataset: str, fraction: float = 0.05, seed: int = 0) -> dict:
+def probe(dataset: str, split_seed: int, fraction: float = 0.05, seed: int = 0) -> dict:
     """Phase 2.1 feasibility probe: time and size a small run before committing the grid."""
     import time
 
-    frame = features_mod.load_view(dataset, "raw")
-    split = load_splits(dataset)
+    frame = features_mod.load_view(dataset, "raw", split_seed)
+    split = load_splits(dataset, split_seed)
     x, y = features_mod.xy(frame)
 
     rng = np.random.default_rng(seed)
@@ -87,7 +89,8 @@ def probe(dataset: str, fraction: float = 0.05, seed: int = 0) -> dict:
                         x.iloc[query].reset_index(drop=True), seed)
     elapsed = time.time() - started
 
-    report = {"dataset": dataset, "backend": backend.name, "context_rows": int(keep.size),
+    report = {"dataset": dataset, "split_seed": split_seed, "backend": backend.name,
+              "context_rows": int(keep.size),
               "query_rows": int(query.size), "seconds": elapsed,
               "extrapolated_full_context_seconds": elapsed / fraction}
     try:

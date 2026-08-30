@@ -1,4 +1,8 @@
-"""Phase 1 -- raw CSV to frozen splits and the two feature views."""
+"""Phase 1 -- raw CSV to a frozen split and the two feature views, for one split seed.
+
+Cleaning is split-independent and produces the same file every time; the split, the
+views and the fitted encoder are per split.
+"""
 
 from __future__ import annotations
 
@@ -13,9 +17,9 @@ from ..data import features as features_mod
 from ..data import loaders, split as split_mod
 
 
-def run(dataset: str) -> dict:
-    cfg: DictConfig = load(dataset)
-    paths.ensure_dirs()
+def run(dataset: str, split_seed: int) -> dict:
+    cfg: DictConfig = load(dataset, split_seed=split_seed)
+    paths.ensure_dirs(split_seed)
 
     frame = loaders.load_raw(cfg)
     loaders.write_interim(cfg, frame)
@@ -31,9 +35,12 @@ def run(dataset: str) -> dict:
 
     summary = {
         "dataset": dataset,
+        "split_seed": split_seed,
         "cleaning": report,
         "balance": balance,
         "views": {name: list(frame.shape) for name, frame in views.items()},
     }
-    (paths.DATA_PROCESSED / f"{dataset}_data_summary.json").write_text(json.dumps(summary, indent=2))
+    (paths.split_root(split_seed) / f"{dataset}_data_summary.json").write_text(
+        json.dumps(summary, indent=2)
+    )
     return summary
