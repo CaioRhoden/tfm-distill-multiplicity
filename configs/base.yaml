@@ -27,5 +27,3 @@ eval:
   threshold: 0.5
   n_boot: 2000
   rashomon_eps: 0.01         # val log-loss slack for the Rashomon-filtered variant
-  auroc_margin: -0.005       # non-inferiority margin from the decision rule
-  ambiguity_rel_drop: 0.25   # supports-the-hypothesis threshold

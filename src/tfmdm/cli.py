@@ -75,10 +75,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--models", nargs="+", default=INTERPRETABLE + ["tabicl"])
     p.add_argument("--arms", nargs="+", default=ARMS + ["incontext"])
 
-    p = sub.add_parser("verdict", help="Phase 5.4: apply the decision rule")
-    p.add_argument("--datasets", nargs="+", default=DATASETS)
-    p.add_argument("--models", nargs="+", default=INTERPRETABLE)
-
     p = sub.add_parser("figures", help="Render F1-F4")
     p.add_argument("--datasets", nargs="+", default=DATASETS)
     p.add_argument("--models", nargs="+", default=INTERPRETABLE)
@@ -168,11 +164,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = aggregate(args.datasets, args.models, args.arms)
         _emit({"n_summaries": len(result["summaries"]),
                "n_comparisons": len(result["comparisons"])})
-
-    elif command == "verdict":
-        from .analysis import write_verdict
-
-        _emit(write_verdict(args.datasets, args.models))
 
     elif command == "figures":
         from .analysis import figures

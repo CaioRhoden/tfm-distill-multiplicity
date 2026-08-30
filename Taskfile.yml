@@ -118,11 +118,6 @@ tasks:
     desc: 'Phase 5.1-5.3: multiplicity, performance, bootstrap intervals, Holm-corrected tests'
     cmds: ['{{.RUN}} analyze --datasets {{.DATASETS}}']
 
-  verdict:
-    desc: 'Phase 5.4: apply the pre-registered decision rule to results/'
-    deps: [analyze]
-    cmds: ['{{.RUN}} verdict --datasets {{.DATASETS}} --models {{.MODELS}}']
-
   figures:
     desc: Render F1-F4 into results/figures/
     cmds: ['{{.RUN}} figures --datasets {{.DATASETS}} --models {{.MODELS}}']
@@ -132,12 +127,11 @@ tasks:
     cmds:
       - task: data
       - task: sanity
-      - task: softlabels
+      - task: tabicl:softlabels
       - task: tabicl:preds
       - task: tune
       - task: sweep
       - task: analyze
-      - task: verdict
       - task: figures
 
   # --- W&B ---------------------------------------------------------------------

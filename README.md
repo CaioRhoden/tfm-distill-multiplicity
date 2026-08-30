@@ -51,7 +51,6 @@ task tabicl:preds      # Phase 2.4: the 30-model TabICLv2 set (baseline B3)
 task tune              # Phase 4.2: one random search per (dataset, model, arm)
 task slurm             # Phase 4.1: submit the sweep as an idempotent SLURM array
 task analyze           # Phase 5: multiplicity, bootstrap intervals, Holm-corrected tests
-task verdict           # Phase 5.4: apply the pre-registered decision rule
 task figures           # F1-F4 into results/figures/
 ```
 
@@ -83,7 +82,7 @@ src/tfmdm/
   models/        EBM, NAM (PyTorch port), logistic regression, behind one interface
   metrics/       performance, multiplicity (ambiguity/discrepancy), bootstrap + Holm
   stages/        one module per pipeline phase; each is a Taskfile target and a SLURM job
-  analysis/      aggregation, the decision rule, figures F1-F4
+  analysis/      aggregation and figures F1-F4
 tests/           metric identities, preprocessing correctness, cross-fitting guards
 scripts/         sweep.slurm
 ```

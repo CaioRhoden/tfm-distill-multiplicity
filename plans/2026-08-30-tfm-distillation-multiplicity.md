@@ -9,12 +9,18 @@ stability to the interpretable models — **without losing AUROC**?
 or better AUROC. (H2) EBM/NAM distilled from TabICLv2 soft probs land strictly inside the
 (multiplicity, AUROC) Pareto frontier traced by their hard-label counterparts.
 
-**Decision rule.**
-*Supports:* on **both** datasets and **both** model families, distilled ambiguity drops by
-≥25% relative (bootstrap 95% CI excluding 0) while test AUROC is non-inferior — CI lower bound
-of ΔAUROC above −0.005.
-*Refutes:* ambiguity drop is <10% relative, OR AUROC falls below the non-inferiority margin.
-*Inconclusive:* effects present on one dataset only → report as dataset-dependent, do not claim H2.
+**Decision rule** (pre-registered here; applied by hand to `results/comparisons.csv`, not by
+the pipeline). Significance only — no minimum effect size (see D8).
+*Supports:* on **both** datasets and **both** model families, the paired 95% CI on
+ΔAmbiguity = distilled − hard lies entirely below zero and survives Holm correction across the
+four comparisons, while test AUROC is non-inferior — CI lower bound of ΔAUROC above −0.005.
+*Refutes:* the ΔAmbiguity CI includes zero or lies above it, OR AUROC falls below the
+non-inferiority margin.
+*Inconclusive:* the CI clears zero in some cells but not others → report as dataset- or
+model-dependent, do not claim H2.
+*Reporting requirement:* every ΔAmbiguity interval is quoted with its relative change. No
+sentence claims that distillation "reduces multiplicity" without the size of the reduction in
+the same sentence.
 
 ## Setup
 | | |
@@ -132,8 +138,11 @@ of ΔAUROC above −0.005.
 - [ ] **5.3** Uncertainty: BCa bootstrap (2,000 resamples) over **test points** for each metric,
       and paired bootstrap for arm differences. Holm correction over the 4 primary comparisons
       (2 datasets × 2 models × 1 arm-pair). · *done when:* every headline number carries a CI.
-- [ ] **5.4** Apply the decision rule verbatim and write the verdict into `results/verdict.md`
-      **before** any figure polishing. · *done when:* the file states supports/refutes/inconclusive.
+- [ ] **5.4** Apply the decision rule above to `results/comparisons.csv` **before** any figure
+      polishing, and record the reading in the write-up. This is done by hand — the pipeline
+      produces the numbers and stops there. · *done when:* each of the four cells has a stated
+      supports/refutes/inconclusive reading, quoting `delta_point`, the paired CI,
+      `relative_change` and `holm_reject`.
 
 ## Runs
 | Run | Condition | Varies | Seeds | Est. time |
@@ -240,6 +249,22 @@ either fails the job or blocks it. Offline-first with an explicit sync keeps run
 whether or not the node is connected. The lockfile plus per-run git and lock hashes make any
 figure traceable to an exact environment.
 **Revisit if:** the cluster provides network on compute nodes — `WANDB_MODE=online` already works.
+
+### D8 — Significance-only decision rule, with mandatory effect-size reporting
+**Chose:** H2 turns on whether the paired CI for ΔAmbiguity clears zero after Holm correction,
+with no minimum effect size attached.
+**Over:** a pre-registered effect-size floor — either a fixed relative drop, or the fraction of
+the hard-to-TabICLv2 ambiguity gap that distillation closes.
+**Because:** any floor we could name would be invented rather than derived, and an arbitrary
+threshold is harder to defend than none at all. The cost is real and is mitigated by the
+reporting requirement rather than by the rule: with 9,758 test points on Adult the standard
+error of an ambiguity near 0.20 is ≈0.004, and the paired bootstrap is tighter still, so a drop
+of roughly 4% relative already clears zero. Statistical significance is close to free at this
+sample size and does not by itself establish that the effect matters to anyone. Quoting the
+relative change beside every interval keeps a small effect legible as a small effect.
+**Revisit if:** the observed drops are large and unambiguous, in which case the choice is moot;
+or a reviewer asks for a practical-relevance criterion, in which case the fraction-of-gap-closed
+anchor is the one to adopt, since it is derived from B3 rather than asserted.
 
 ## Out of scope
 - Attributing the effect to TabICLv2 specifically rather than to soft targets in general;
