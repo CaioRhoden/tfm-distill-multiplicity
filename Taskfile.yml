@@ -15,6 +15,11 @@ vars:
   RUN: uv run tfmdm
   DATASETS: adult taiwan
   MODELS: ebm nam
+  ARMS: hard distilled
+  # Split replicates. Override per invocation: SPLIT_SEEDS='0 1' task data
+  SPLIT_SEEDS: '{{.SPLIT_SEEDS | default "0 1 2 3 4"}}'
+  # Run seeds per SLURM job. Empty = all 30 in one job; set e.g. 10 for more parallelism.
+  CHUNK: '{{.CHUNK | default ""}}'
 
 tasks:
   default:
@@ -49,32 +54,39 @@ tasks:
 
   # --- phase 1 -----------------------------------------------------------------
   data:
-    desc: 'Phase 1: clean, deduplicate, split 60/20/20, build the raw and encoded views'
+    desc: 'Phase 1: clean, split 60/20/20 and build the views, for every split replicate'
     cmds:
-      - for: { var: DATASETS, split: ' ' }
-        cmd: '{{.RUN}} data --dataset {{.ITEM}}'
+      - |
+        for k in {{.SPLIT_SEEDS}}; do for d in {{.DATASETS}}; do
+          {{.RUN}} data --dataset $d --split-seed $k
+        done; done
 
   # --- phase 2 -----------------------------------------------------------------
   tabicl:probe:
-    desc: 'TabICLv2 feasibility probe on 5% of the data'
+    desc: 'Phase 2.1: TabICLv2 feasibility probe on 5% of the data (primary split only)'
     cmds:
       - for: { var: DATASETS, split: ' ' }
         cmd: '{{.RUN}} probe --dataset {{.ITEM}}'
 
   tabicl:softlabels:
-    desc: 'Phase 2.2-2.3: cross-fitted TabICLv2 probabilities for the distilled arm'
+    desc: 'Phase 2.2-2.3: cross-fitted TabICLv2 probabilities, per split replicate'
     deps: [data]
     cmds:
-      - for: { var: DATASETS, split: ' ' }
-        cmd: '{{.RUN}} softlabels --dataset {{.ITEM}}'
+      - |
+        for k in {{.SPLIT_SEEDS}}; do for d in {{.DATASETS}}; do
+          {{.RUN}} softlabels --dataset $d --split-seed $k
+        done; done
 
   tabicl:preds:
-    desc: 'baseline tabicl'
+    desc: 'Phase 2.4 / R1: the 30-model TabICLv2 set (baseline B3), per split replicate'
     deps: [data]
     cmds:
-      - for: { var: DATASETS, split: ' ' }
-        cmd: |
-          for s in $(seq 0 29); do {{.RUN}} tabicl-preds --dataset {{.ITEM}} --seed $s; done
+      - |
+        for k in {{.SPLIT_SEEDS}}; do for d in {{.DATASETS}}; do
+          for s in $(seq 0 29); do
+            {{.RUN}} tabicl-preds --dataset $d --seed $s --split-seed $k
+          done
+        done; done
 
   # --- phase 3 -----------------------------------------------------------------
   sanity:
@@ -87,40 +99,67 @@ tasks:
     desc: 'one random search per (dataset, model, arm), shared by all 30 seeds'
     cmds:
       - |
-        for d in {{.DATASETS}}; do for m in {{.MODELS}}; do
-          for a in hard distilled; do
-            {{.RUN}} tune --dataset $d --model $m --arm $a
+        for k in {{.SPLIT_SEEDS}}; do for d in {{.DATASETS}}; do for m in {{.MODELS}}; do
+          for a in {{.ARMS}}; do
+            {{.RUN}} tune --dataset $d --model $m --arm $a --split-seed $k
           done
-        done; done
+        done; done; done
 
   train:
     desc: 'One cell. Usage: task train -- --dataset adult --model ebm --arm hard --seed 0'
     cmds: ['{{.RUN}} train {{.CLI_ARGS}}']
 
+  train:group:
+    desc: 'All run seeds of one group. Usage: task train:group -- --dataset adult --model ebm --arm hard'
+    cmds: ['{{.RUN}} train-group {{.CLI_ARGS}}']
+
   sweep:
-    desc: 'all cells in sequence. Prefer task slurm on a cluster.'
-    cmds: ['{{.RUN}} sweep --datasets {{.DATASETS}} --models {{.MODELS}}']
-
-  cells:
-    desc: Print the sweep grid, one JSON object per line
-    cmds: ['{{.RUN}} cells --datasets {{.DATASETS}} --models {{.MODELS}}']
-
-  slurm:
-    desc: Submit the sweep as a SLURM array (idempotent; resubmitting reruns only gaps)
+    desc: 'Phase 4.1 locally: every group in sequence. Prefer task slurm on a cluster.'
     cmds:
       - |
-        N=$({{.RUN}} cells --datasets {{.DATASETS}} --models {{.MODELS}} | wc -l)
-        echo "Submitting $N cells"
-        sbatch --array=0-$((N-1))%32 scripts/sweep.slurm
+        {{.RUN}} sweep --datasets {{.DATASETS}} --models {{.MODELS}} --arms {{.ARMS}} \
+          --split-seeds {{.SPLIT_SEEDS}} {{if .CHUNK}}--chunk {{.CHUNK}}{{end}}
+
+  groups:
+    desc: Print the SLURM group grid, one JSON object per line
+    cmds:
+      - |
+        {{.RUN}} groups --datasets {{.DATASETS}} --models {{.MODELS}} --arms {{.ARMS}} \
+          --split-seeds {{.SPLIT_SEEDS}} {{if .CHUNK}}--chunk {{.CHUNK}}{{end}}
+
+  slurm:
+    desc: Submit the sweep as a SLURM array, one job per group (idempotent)
+    cmds:
+      - |
+        export TFMDM_DATASETS='{{.DATASETS}}' TFMDM_MODELS='{{.MODELS}}'
+        export TFMDM_ARMS='{{.ARMS}}' TFMDM_SPLIT_SEEDS='{{.SPLIT_SEEDS}}'
+        export TFMDM_CHUNK='{{.CHUNK}}'
+        N=$(task groups | wc -l)
+        echo "Submitting $N groups (each covering its own run seeds)"
+        sbatch --array=0-$((N-1))%16 \
+          --export=ALL,TFMDM_DATASETS,TFMDM_MODELS,TFMDM_ARMS,TFMDM_SPLIT_SEEDS,TFMDM_CHUNK \
+          scripts/sweep.slurm
 
   # --- phase 5 -----------------------------------------------------------------
   analyze:
-    desc: 'Phase 5.1-5.3: multiplicity, performance, bootstrap intervals, Holm-corrected tests'
-    cmds: ['{{.RUN}} analyze --datasets {{.DATASETS}}']
+    desc: 'Phase 5.1-5.3: multiplicity, intervals and Holm-corrected tests, per split'
+    cmds:
+      - |
+        for k in {{.SPLIT_SEEDS}}; do
+          {{.RUN}} analyze --datasets {{.DATASETS}} --split-seed $k
+        done
+
+  combine:
+    desc: 'Pool the per-split results into results/across_splits.csv (robustness readout)'
+    cmds: ['{{.RUN}} combine --split-seeds {{.SPLIT_SEEDS}}']
 
   figures:
-    desc: Render F1-F4 into results/figures/
-    cmds: ['{{.RUN}} figures --datasets {{.DATASETS}} --models {{.MODELS}}']
+    desc: Render F1-F4 into results/split{K}/figures/, for every split replicate
+    cmds:
+      - |
+        for k in {{.SPLIT_SEEDS}}; do
+          {{.RUN}} figures --datasets {{.DATASETS}} --models {{.MODELS}} --split-seed $k
+        done
 
   all:
     desc: The full pipeline in order. Stops at the first failing gate.
@@ -132,6 +171,7 @@ tasks:
       - task: tune
       - task: sweep
       - task: analyze
+      - task: combine
       - task: figures
 
   # --- W&B ---------------------------------------------------------------------
@@ -155,3 +195,9 @@ tasks:
     cmds:
       - rm -rf data/interim data/processed artifacts results
       - echo "Removed derived artifacts. Raw CSVs under data/ are untouched."
+
+  clean:split:
+    desc: 'Drop one replicate. Usage: SPLIT=2 task clean:split'
+    cmds:
+      - rm -rf artifacts/split{{.SPLIT}} results/split{{.SPLIT}} configs/tuned/split{{.SPLIT}}
+      - echo "Removed split {{.SPLIT}}." 
