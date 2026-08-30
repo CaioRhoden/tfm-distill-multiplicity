@@ -30,8 +30,8 @@ the same sentence.
 | Baselines | B0 logistic regression (trivial); B1 hard-label EBM; B2 hard-label NAM; B3 TabICLv2 itself |
 | Primary metric | Test **AUROC** |
 | Secondary metrics | **Ambiguity** and **discrepancy** (Marx et al. 2020) over the 30-model set. Log loss is computed but not reported: it is what model selection and the Rashomon filter use |
-| Compute budget | SLURM cluster, GPU partition. Est. total ≈ 45 GPU-h (see Runs) |
-| Seeds | 30 (`0..29`) |
+| Compute budget | SLURM cluster, GPU partition. Est. ≈ 8 GPU-h per split replicate, ≈ 40 GPU-h for all five (see Runs) |
+| Seeds | 30 run seeds (`0..29`) per cell; 5 split replicates (`split_seed 0..4`) as the outer robustness loop |
 | Loss | Baselines/controls: binary cross-entropy on hard labels. Distilled: **soft cross-entropy** `−[p·log q + (1−p)·log(1−q)]` against the TabICLv2 probability `p`; hard labels discarded entirely |
 
 ## Assumptions
@@ -75,14 +75,17 @@ the same sentence.
       `"Missing"` category rather than imputing. · *produces:* `data/processed/{ds}.parquet` +
       `data/processed/{ds}_cleaning_report.json` · *done when:* zero duplicate rows and the
       report's dropped-row count is logged.
-- [ ] **1.3** Fixed stratified split 60/20/20 → train/val/test with `split_seed=0`, held
-      **identical across all 30 model seeds** (ambiguity/discrepancy are defined pointwise on a
-      common test set). · *produces:* `data/processed/{ds}_splits.json` (row-index lists + hashes)
-      · *done when:* per-split positive rate is within 0.5pp of the pooled rate and the three
-      index sets are provably disjoint.
+- [ ] **1.3** Stratified 60/20/20 split → train/val/test, **frozen within a split seed** and
+      identical across all 30 run seeds and both arms (ambiguity/discrepancy are defined
+      pointwise on a common test set). Repeat for `split_seed ∈ 0..4`; each replicate's
+      artifacts live under `artifacts/split{K}/` so replicates cannot be mixed. · *produces:*
+      `artifacts/split{K}/splits/{ds}.json` · *done when:* per-split positive rate is within
+      0.5pp of the pooled rate, the three index sets are provably disjoint, and two different
+      split seeds produce different test sets.
 - [ ] **1.4** Two feature views built with transformers **fit on train only**: `raw` (TabICLv2,
       categoricals as strings), `encoded` (NAM: standardised numerics + one-hot per categorical).
-      EBM consumes `raw` directly. · *produces:* `data/processed/{ds}_{view}.parquet` +
+      EBM consumes `raw` directly. Both are written per split, since the encoder is fit on that
+      split's training rows. · *produces:* `artifacts/split{K}/views/{ds}_{view}.parquet` +
       pickled fitted transformer · *done when:* a test asserts the scaler's mean equals the
       train mean and does **not** equal the pooled mean.
 
@@ -93,16 +96,17 @@ the same sentence.
 - [ ] **2.2** **Cross-fitted** train soft labels: 5-fold stratified split *inside train*; for fold
       k, context = train∖k, predict on fold k. This is the step that prevents in-context
       memorisation from producing degenerate near-0/1 targets (see D2). · *produces:*
-      `artifacts/softlabels/{ds}_train_oof.parquet` · *done when:* the mean of the soft labels is
+      `artifacts/split{K}/softlabels/{ds}_tabicl_train_oof.parquet` · *done when:* the mean of the soft labels is
       within 1pp of the train positive rate, and their entropy is **strictly greater** than that
       of in-context (non-cross-fitted) probs on the same rows — assert this explicitly.
 - [ ] **2.3** Val soft labels: context = full train, predict on val. Test is **never** given soft
       labels; test is always scored against true labels. · *produces:*
-      `artifacts/softlabels/{ds}_val.parquet` · *done when:* val AUROC of the soft labels is
+      `artifacts/split{K}/softlabels/{ds}_tabicl_val.parquet` · *done when:* val AUROC is
       logged and is ≥ the trivial baseline.
 - [ ] **2.4** TabICLv2 model set for B3: for `seed ∈ 0..29`, context = stratified bootstrap of
       train (same resampling protocol as every other method, see D3), predict on test. ·
-      *produces:* `artifacts/preds/{ds}_tabicl_s{seed}.parquet` · *done when:* 30 files exist and
+      *produces:* `artifacts/split{K}/preds/{ds}_tabicl_incontext_s{seed}.parquet` ·
+      *done when:* 30 files exist per split and
       pairwise-identical prediction vectors number 0.
 
 ### Phase 3 — Sanity phase (run before the real sweeps)
@@ -116,15 +120,19 @@ the same sentence.
       resample train per D3, train, early-stop/select on **val** (val AUROC for `hard`; val soft
       cross-entropy against TabICLv2 probs for `distilled` — this is the "one validation step on
       the probs" you asked for), predict on the frozen test set. · *produces:*
-      `artifacts/preds/{ds}_{model}_{arm}_s{seed}.parquet`, one W&B run each · *done when:*
-      240 prediction files exist and each logs its selected hyperparameters.
-- [ ] **4.2** Hyperparameters fixed across seeds and tuned once per (dataset, model, arm) on val
-      with a small random search (≤20 configs, `tune_seed=1000`), so seed-to-seed spread reflects
-      training randomness only. · *produces:* `configs/tuned/*.yaml` · *done when:* configs are
-      committed and referenced by hash in every run.
-- [ ] **4.3** Checkpoint per (model, arm, seed) to `artifacts/ckpt/`; the SLURM array skips work
-      whose output parquet already exists. · *done when:* a killed and resubmitted array
-      re-runs only the missing cells.
+      `artifacts/split{K}/preds/{ds}_{model}_{arm}_s{seed}.parquet`, one W&B run each ·
+      *done when:* 240 prediction files exist per split (1,200 across five) and each logs its
+      selected hyperparameters.
+- [ ] **4.2** Hyperparameters fixed across run seeds and tuned once per (dataset, model, arm,
+      split) on val with a small random search (≤20 configs, `tune_seed=1000`), so seed-to-seed
+      spread reflects training randomness only. Retuned per split because the validation set
+      moves with the partition. · *produces:* `configs/tuned/split{K}/*.yaml` · *done when:*
+      configs are committed and referenced by path in every run.
+- [ ] **4.3** The SLURM array submits one job per **group** — all 30 run seeds of one
+      (dataset, model, arm, split) — so the view, split and soft labels load once rather than
+      thirty times; `--chunk` trades that back for parallelism. Each run seed is skipped if its
+      prediction file already exists. · *done when:* a killed and resubmitted array re-runs only
+      the missing seeds.
 
 ### Phase 5 — Analysis
 - [ ] **5.1** Metric module: ambiguity = fraction of test points where ≥1 of the 30 models
@@ -138,20 +146,27 @@ the same sentence.
 - [ ] **5.3** Uncertainty: BCa bootstrap (2,000 resamples) over **test points** for each metric,
       and paired bootstrap for arm differences. Holm correction over the 4 primary comparisons
       (2 datasets × 2 models × 1 arm-pair). · *done when:* every headline number carries a CI.
-- [ ] **5.4** Apply the decision rule above to `results/comparisons.csv` **before** any figure
+- [ ] **5.4** Apply the decision rule above to `results/split{K}/comparisons.csv` **before** any figure
       polishing, and record the reading in the write-up. This is done by hand — the pipeline
       produces the numbers and stops there. · *done when:* each of the four cells has a stated
       supports/refutes/inconclusive reading, quoting `delta_point`, the paired CI,
       `relative_change` and `holm_reject`.
+- [ ] **5.5** Cross-split robustness: pool the five replicates into `results/across_splits.csv`
+      — per (dataset, model), the median and range of ΔAmbiguity and how many splits cleared
+      zero. Splits are replicates, not extra hypotheses, so Holm is applied *within* a split and
+      cross-split agreement is reported descriptively. · *done when:* the table exists and the
+      `consistent_direction` column is quoted in the write-up.
 
 ## Runs
+Per split replicate; multiply by 5 for the full outer loop.
+
 | Run | Condition | Varies | Seeds | Est. time |
 |---|---|---|---|---|
-| R0 | Soft-label generation (2.2–2.3) | dataset × fold | — | 12 jobs, ~4 GPU-h |
-| R1 | B3 TabICLv2 on test | dataset × bootstrap | 30 | 60 jobs, ~15 GPU-h |
-| R2 | B1/B2 hard-label EBM, NAM | dataset × model | 30 | 120 jobs; EBM ~2 CPU-h, NAM ~15 GPU-h |
-| R3 | Distilled EBM, NAM (soft-only) | dataset × model | 30 | 120 jobs, ~17 GPU-h |
-| R4 | B0 logistic regression | dataset | 30 | 60 jobs, minutes |
+| R0 | Soft-label generation (2.2–2.3) | dataset × fold | — | 12 passes, minutes |
+| R1 | B3 TabICLv2 on test | dataset × bootstrap | 30 | 60 passes, ~1 GPU-h |
+| R2 | B1/B2 hard-label EBM, NAM | dataset × model | 30 | 4 groups; EBM ~1 CPU-h, NAM ~2 GPU-h |
+| R3 | Distilled EBM, NAM (soft-only) | dataset × model | 30 | 4 groups, ~3 GPU-h |
+| R4 | B0 logistic regression | dataset | 30 | 2 groups, minutes |
 
 ## Figures
 | # | Question it answers | Type | x / y | Notes |
@@ -174,14 +189,20 @@ the same sentence.
 
 ## Technical decisions
 
-### D1 — Fixed data partition, varied training randomness
-**Chose:** one stratified 60/20/20 split (`split_seed=0`) shared by every run.
-**Over:** resampling the split per seed.
-**Because:** ambiguity and discrepancy are defined as disagreement over a *common* set of test
-points; a moving test set makes them incomparable. It also isolates multiplicity arising from
-the training procedure — precisely the quantity distillation is claimed to reduce.
-**Revisit if:** a reviewer asks about split sensitivity — then add 5 outer splits × 30 seeds as a
-nested robustness check, at 5× cost.
+### D1 — Partition frozen within a replicate, repeated across five replicates
+**Chose:** a stratified 60/20/20 split held identical across all 30 run seeds and both arms
+*within* a split seed, with the whole experiment repeated at `split_seed ∈ 0..4`.
+**Over:** resampling the split per run seed (which would destroy the metric), or a single
+partition with no outer loop (which would leave split sensitivity unmeasured).
+**Because:** ambiguity and discrepancy are disagreement rates over a *common* set of test
+points, so within a replicate the test set must not move — that is what isolates multiplicity
+arising from the training procedure, which is the quantity distillation is claimed to reduce.
+Across replicates, re-drawing the partition answers the separate and equally necessary
+question of whether the effect is a property of the method or of which rows happened to land
+in test. The two are kept apart by construction: each replicate's artifacts live in
+`artifacts/split{K}/`, and nothing in the analysis pools predictions across replicates.
+**Revisit if:** the five replicates agree closely — then the primary split alone suffices for
+follow-up work, at a fifth of the cost.
 
 ### D2 — Cross-fitted (out-of-fold) soft labels
 **Chose:** 5-fold cross-fitting inside the training set to produce TabICLv2 probabilities.
@@ -267,6 +288,8 @@ or a reviewer asks for a practical-relevance criterion, in which case the fracti
 anchor is the one to adopt, since it is derived from B3 rather than asserted.
 
 ## Out of scope
+- Pooling the five split replicates into a single significance test. They are reported as
+  agreeing or disagreeing, not combined into one interval.
 - Attributing the effect to TabICLv2 specifically rather than to soft targets in general;
   see D4. This experiment measures the pipeline, not the teacher's knowledge.
 - Leakage auditing. Deduplication before splitting and train-only transformer fitting are
