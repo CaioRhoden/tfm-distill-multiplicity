@@ -54,6 +54,7 @@ class ArmResult:
     dataset: str
     model: str
     arm: str
+    split_seed: int
     seeds: list[int]
     row_index: np.ndarray
     y_true: np.ndarray
@@ -65,13 +66,14 @@ class ArmResult:
         return self.val_log_loss <= self.val_log_loss.min() + eps
 
 
-def collect_arm(dataset: str, model: str, arm: str, seed_list: list[int]) -> ArmResult:
+def collect_arm(dataset: str, model: str, arm: str, split_seed: int,
+                seed_list: list[int]) -> ArmResult:
     test_columns, val_losses, found = [], [], []
     reference_rows: np.ndarray | None = None
     y_true: np.ndarray | None = None
 
     for seed in seed_list:
-        path = paths.preds(dataset, model, arm, seed)
+        path = paths.preds(dataset, model, arm, seed, split_seed)
         if not path.exists():
             continue
         frame = pd.read_parquet(path)
@@ -84,7 +86,8 @@ def collect_arm(dataset: str, model: str, arm: str, seed_list: list[int]) -> Arm
         elif not np.array_equal(rows, reference_rows):
             raise AssertionError(
                 f"{path.name} was evaluated on different test rows than seed {found[0]}. "
-                "Multiplicity across a moving test set is not defined."
+                "Multiplicity across a moving test set is not defined -- this usually means "
+                "the split was regenerated without clearing this split directory."
             )
 
         test_columns.append(test["prob"].to_numpy())
@@ -96,11 +99,12 @@ def collect_arm(dataset: str, model: str, arm: str, seed_list: list[int]) -> Arm
 
     if len(found) < 2:
         raise FileNotFoundError(
-            f"Found {len(found)} prediction file(s) for {dataset}/{model}/{arm}; "
-            "multiplicity needs at least two. Has the sweep run?"
+            f"Found {len(found)} prediction file(s) for {dataset}/{model}/{arm} under "
+            f"split{split_seed}; multiplicity needs at least two. Has the sweep run?"
         )
 
-    return ArmResult(dataset, model, arm, found, reference_rows, y_true,  # type: ignore[arg-type]
+    return ArmResult(dataset, model, arm, split_seed, found,
+                     reference_rows, y_true,  # type: ignore[arg-type]
                      np.column_stack(test_columns), np.asarray(val_losses))
 
 
@@ -129,7 +133,7 @@ def summarise_arm(result: ArmResult, cfg) -> dict:
     per_seed = [performance(y, probs[:, j], threshold) for j in range(probs.shape[1])]
     summary = {
         "dataset": result.dataset, "model": result.model, "arm": result.arm,
-        "n_seeds": len(result.seeds), "n_test": n,
+        "split_seed": result.split_seed, "n_seeds": len(result.seeds), "n_test": n,
         **full.as_dict(),
         **amb_ci.as_dict("ambiguity_"),
         **disc_ci.as_dict("discrepancy_"),
@@ -174,7 +178,8 @@ def compare_arms(a: ArmResult, b: ArmResult, cfg) -> list[dict]:
     )
 
     base_amb = float(db.any(axis=1).mean())
-    common = {"dataset": a.dataset, "model": a.model, "arm_a": a.arm, "arm_b": b.arm}
+    common = {"dataset": a.dataset, "model": a.model, "split_seed": a.split_seed,
+              "arm_a": a.arm, "arm_b": b.arm}
     return [
         {**common, "metric": "ambiguity", "p_value": amb_p,
          "relative_change": (amb_interval.point / base_amb) if base_amb > 0 else np.nan,
@@ -184,22 +189,30 @@ def compare_arms(a: ArmResult, b: ArmResult, cfg) -> list[dict]:
     ]
 
 
-def aggregate(datasets: list[str], models: list[str], arms: list[str]) -> dict:
-    paths.ensure_dirs()
+def aggregate(datasets: list[str], models: list[str], arms: list[str],
+              split_seed: int) -> dict:
+    """Analyse one split replicate. Results land under results/split{K}/.
+
+    Holm correction is applied *within* a split, over the four ambiguity differences
+    (2 datasets x 2 models). Splits are replicates of the same experiment, not extra
+    hypotheses, so pooling them into one correction family would penalise the design
+    for being repeated. Cross-split agreement is reported descriptively by ``combine``.
+    """
+    paths.ensure_dirs(split_seed)
     summaries: list[dict] = []
     comparisons: list[dict] = []
 
     for dataset in datasets:
-        cfg = load(dataset)
-        seed_list = [int(s) for s in cfg.seeds]
+        cfg = load(dataset, split_seed=split_seed)
+        seed_list = [int(s) for s in cfg.model_seeds]
         for model in models:
             collected: dict[str, ArmResult] = {}
             for arm in arms:
                 try:
-                    collected[arm] = collect_arm(dataset, model, arm, seed_list)
+                    collected[arm] = collect_arm(dataset, model, arm, split_seed, seed_list)
                 except FileNotFoundError as exc:
                     summaries.append({"dataset": dataset, "model": model, "arm": arm,
-                                      "error": str(exc)})
+                                      "split_seed": split_seed, "error": str(exc)})
                     continue
                 summaries.append(summarise_arm(collected[arm], cfg))
 
@@ -207,18 +220,61 @@ def aggregate(datasets: list[str], models: list[str], arms: list[str]) -> dict:
                 if arm_a in collected and arm_b in collected:
                     comparisons += compare_arms(collected[arm_a], collected[arm_b], cfg)
 
-    # Holm across the primary family: the four ambiguity differences (2 datasets x 2 models).
     primary = [c for c in comparisons if c["metric"] == "ambiguity"]
     if primary:
         flags = boot.holm([c["p_value"] for c in primary])
         for comparison, reject in zip(primary, flags):
             comparison["holm_reject"] = bool(reject)
 
-    summary_frame = pd.DataFrame(summaries)
-    comparison_frame = pd.DataFrame(comparisons)
-    summary_frame.to_csv(paths.RESULTS / "arm_summaries.csv", index=False)
-    comparison_frame.to_csv(paths.RESULTS / "comparisons.csv", index=False)
-    (paths.RESULTS / "aggregate.json").write_text(
-        json.dumps({"summaries": summaries, "comparisons": comparisons}, indent=2, default=float)
+    out = paths.results_dir(split_seed)
+    out.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(summaries).to_csv(out / "arm_summaries.csv", index=False)
+    pd.DataFrame(comparisons).to_csv(out / "comparisons.csv", index=False)
+    (out / "aggregate.json").write_text(
+        json.dumps({"split_seed": split_seed, "summaries": summaries,
+                    "comparisons": comparisons}, indent=2, default=float)
     )
     return {"summaries": summaries, "comparisons": comparisons}
+
+
+def combine(split_seeds: list[int]) -> dict:
+    """Pool the per-split results into a robustness readout (results/across_splits.csv).
+
+    The question this answers is the one the outer loop exists for: does the direction
+    and size of the effect survive re-drawing the partition, or was it an artifact of
+    which rows happened to land in test? It reports, per (dataset, model), the median
+    and range of the ambiguity delta across splits and how many splits cleared zero --
+    it does not pool the intervals into a single test.
+    """
+    frames = []
+    for split_seed in split_seeds:
+        path = paths.results_dir(split_seed) / "comparisons.csv"
+        if path.exists():
+            frames.append(pd.read_csv(path))
+    if not frames:
+        raise FileNotFoundError(
+            "No per-split comparisons.csv found. Run `tfmdm analyze` for each split first."
+        )
+
+    everything = pd.concat(frames, ignore_index=True)
+    rows = []
+    for (dataset, model, metric), group in everything.groupby(["dataset", "model", "metric"]):
+        cleared = group["delta_ci_high"] < 0.0
+        rows.append({
+            "dataset": dataset, "model": model, "metric": metric,
+            "n_splits": int(len(group)),
+            "delta_median": float(group["delta_point"].median()),
+            "delta_min": float(group["delta_point"].min()),
+            "delta_max": float(group["delta_point"].max()),
+            "relative_change_median": float(group["relative_change"].median()),
+            "splits_ci_below_zero": int(cleared.sum()),
+            "splits_holm_reject": int(group.get("holm_reject", pd.Series(dtype=bool)).sum()),
+            "consistent_direction": bool((group["delta_point"] < 0).all()
+                                         or (group["delta_point"] > 0).all()),
+        })
+
+    frame = pd.DataFrame(rows).sort_values(["metric", "dataset", "model"])
+    paths.RESULTS.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(paths.RESULTS / "across_splits.csv", index=False)
+    everything.to_csv(paths.RESULTS / "all_comparisons.csv", index=False)
+    return {"n_splits": len(frames), "rows": rows}

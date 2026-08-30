@@ -28,16 +28,17 @@ ARM_LABEL = {"hard": "Hard labels", "distilled": "Distilled (TabICLv2)", "tabicl
 MARKER = {"ebm": "o", "nam": "s", "logreg": "^", "tabicl": "D"}
 
 
-def _save(fig: plt.Figure, name: str) -> str:
-    paths.FIGURES.mkdir(parents=True, exist_ok=True)
-    path = paths.FIGURES / f"{name}.png"
+def _save(fig: plt.Figure, name: str, split_seed: int) -> str:
+    out = paths.figures_dir(split_seed)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{name}.png"
     fig.savefig(path, dpi=200, bbox_inches="tight")
     fig.savefig(path.with_suffix(".pdf"), bbox_inches="tight")
     plt.close(fig)
     return str(path)
 
 
-def f1_pareto(summaries: pd.DataFrame) -> str:
+def f1_pareto(summaries: pd.DataFrame, split_seed: int) -> str:
     """Ambiguity against AUROC. A point that moves left without moving down supports H2."""
     datasets = sorted(summaries["dataset"].dropna().unique())
     fig, axes = plt.subplots(1, len(datasets), figsize=(6 * len(datasets), 5), squeeze=False)
@@ -61,11 +62,11 @@ def f1_pareto(summaries: pd.DataFrame) -> str:
         ax.set_title(dataset)
         ax.grid(alpha=0.3)
         ax.legend(fontsize=8, loc="lower left")
-    fig.suptitle("F1 — multiplicity is only meaningful against the accuracy it costs")
-    return _save(fig, "F1_pareto")
+    fig.suptitle(f"F1 — multiplicity against the accuracy it costs (split {split_seed})")
+    return _save(fig, "F1_pareto", split_seed)
 
 
-def f2_bars(summaries: pd.DataFrame) -> str:
+def f2_bars(summaries: pd.DataFrame, split_seed: int) -> str:
     datasets = sorted(summaries["dataset"].dropna().unique())
     fig, axes = plt.subplots(1, len(datasets), figsize=(6 * len(datasets), 4.5), squeeze=False)
     for ax, dataset in zip(axes[0], datasets):
@@ -86,22 +87,22 @@ def f2_bars(summaries: pd.DataFrame) -> str:
         ax.set_title(dataset)
         ax.grid(axis="y", alpha=0.3)
         ax.legend(fontsize=8)
-    fig.suptitle("F2 — multiplicity by arm, with TabICLv2 as the reference line")
-    return _save(fig, "F2_multiplicity_bars")
+    fig.suptitle(f"F2 — multiplicity by arm, TabICLv2 as reference (split {split_seed})")
+    return _save(fig, "F2_multiplicity_bars", split_seed)
 
 
-def f3_threshold(datasets: list[str], models: list[str]) -> str:
+def f3_threshold(datasets: list[str], models: list[str], split_seed: int) -> str:
     thresholds = np.linspace(0.05, 0.95, 37)
     fig, axes = plt.subplots(len(datasets), len(models),
                              figsize=(5 * len(models), 3.5 * len(datasets)), squeeze=False)
     for i, dataset in enumerate(datasets):
-        cfg = load(dataset)
-        seed_list = [int(s) for s in cfg.seeds]
+        cfg = load(dataset, split_seed=split_seed)
+        seed_list = [int(s) for s in cfg.model_seeds]
         for j, model in enumerate(models):
             ax = axes[i][j]
             for arm in ("hard", "distilled"):
                 try:
-                    result = collect_arm(dataset, model, arm, seed_list)
+                    result = collect_arm(dataset, model, arm, split_seed, seed_list)
                 except FileNotFoundError:
                     continue
                 curve = mult.threshold_curve(result.test_probs, thresholds)
@@ -114,19 +115,20 @@ def f3_threshold(datasets: list[str], models: list[str]) -> str:
             ax.legend(fontsize=8)
     fig.suptitle("F3 — does the effect survive away from threshold 0.5?")
     fig.tight_layout()
-    return _save(fig, "F3_threshold_curve")
+    return _save(fig, "F3_threshold_curve", split_seed)
 
 
-def _importance_vectors(dataset: str, model: str, arm: str, seed_list: list[int]) -> list[dict]:
+def _importance_vectors(dataset: str, model: str, arm: str, split_seed: int,
+                        seed_list: list[int]) -> list[dict]:
     vectors = []
     for seed in seed_list:
-        path = paths.PREDS / f"{dataset}_{model}_{arm}_s{seed}_importances.json"
+        path = paths.importances(dataset, model, arm, seed, split_seed)
         if path.exists():
             vectors.append(json.loads(path.read_text()))
     return vectors
 
 
-def f4_explanation_stability(datasets: list[str], models: list[str]) -> str:
+def f4_explanation_stability(datasets: list[str], models: list[str], split_seed: int) -> str:
     """Do the explanations stabilise, not just the predictions?
 
     This is the figure that speaks to the 'natively provides explanations' half of the
@@ -134,11 +136,11 @@ def f4_explanation_stability(datasets: list[str], models: list[str]) -> str:
     """
     records = []
     for dataset in datasets:
-        cfg = load(dataset)
-        seed_list = [int(s) for s in cfg.seeds]
+        cfg = load(dataset, split_seed=split_seed)
+        seed_list = [int(s) for s in cfg.model_seeds]
         for model in models:
             for arm in ("hard", "distilled"):
-                vectors = _importance_vectors(dataset, model, arm, seed_list)
+                vectors = _importance_vectors(dataset, model, arm, split_seed, seed_list)
                 if len(vectors) < 2:
                     continue
                 keys = sorted(set.intersection(*(set(v) for v in vectors)))
@@ -159,17 +161,18 @@ def f4_explanation_stability(datasets: list[str], models: list[str]) -> str:
                       [f"{d}\n{m}·{a}" for (d, m, a), _ in groups], fontsize=7)
         ax.set_ylabel("Spearman ρ between seed pairs")
         ax.grid(axis="y", alpha=0.3)
-        frame.to_csv(paths.RESULTS / "explanation_stability.csv", index=False)
+        frame.to_csv(paths.results_dir(split_seed) / "explanation_stability.csv",
+                     index=False)
     ax.set_title("F4 — stability of global feature importances across seeds")
-    return _save(fig, "F4_explanation_stability")
+    return _save(fig, "F4_explanation_stability", split_seed)
 
 
-def run(datasets: list[str], models: list[str]) -> list[str]:
-    paths.ensure_dirs()
-    summaries = pd.read_csv(paths.RESULTS / "arm_summaries.csv")
+def run(datasets: list[str], models: list[str], split_seed: int) -> list[str]:
+    paths.ensure_dirs(split_seed)
+    summaries = pd.read_csv(paths.results_dir(split_seed) / "arm_summaries.csv")
     return [
-        f1_pareto(summaries),
-        f2_bars(summaries),
-        f3_threshold(datasets, models),
-        f4_explanation_stability(datasets, models),
+        f1_pareto(summaries, split_seed),
+        f2_bars(summaries, split_seed),
+        f3_threshold(datasets, models, split_seed),
+        f4_explanation_stability(datasets, models, split_seed),
     ]

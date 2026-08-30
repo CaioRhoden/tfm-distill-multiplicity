@@ -1,3 +1,3 @@
-from .aggregate import ArmResult, aggregate, collect_arm, compare_arms
+from .aggregate import ArmResult, aggregate, collect_arm, combine, compare_arms
 
-__all__ = ["aggregate", "collect_arm", "compare_arms", "ArmResult"]
+__all__ = ["aggregate", "combine", "collect_arm", "compare_arms", "ArmResult"]
