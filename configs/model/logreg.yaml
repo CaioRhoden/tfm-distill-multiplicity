@@ -1,0 +1,7 @@
+name: logreg
+view: encoded
+params:
+  C: 1.0
+  max_iter: 2000
+search_space:
+  C: [0.01, 0.1, 1.0, 10.0]

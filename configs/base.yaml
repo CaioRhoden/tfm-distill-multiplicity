@@ -1,0 +1,31 @@
+project: tfm-distill-multiplicity
+entity: null                 # W&B entity; null -> user default
+
+seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+        20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+
+split:
+  seed: 0                    # D1: one frozen partition shared by every run
+  train: 0.6
+  val: 0.2
+  test: 0.2
+
+resample:
+  # D3: one randomness protocol for every method -- stratified bootstrap of train,
+  # seeded with the run seed. Set to false only for the init-only ablation.
+  bootstrap: true
+
+softlabels:
+  n_folds: 5                 # D2: cross-fitting folds inside train
+  entropy_guard: true        # assert OOF probs are strictly higher-entropy than in-context
+
+tune:
+  seed: 1000
+  n_configs: 20
+
+eval:
+  threshold: 0.5
+  n_boot: 2000
+  rashomon_eps: 0.01         # val log-loss slack for the Rashomon-filtered variant
+  auroc_margin: -0.005       # non-inferiority margin from the decision rule
+  ambiguity_rel_drop: 0.25   # supports-the-hypothesis threshold

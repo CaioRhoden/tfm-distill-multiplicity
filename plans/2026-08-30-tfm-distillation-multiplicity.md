@@ -1,0 +1,259 @@
+# Experiment: Does distilling a tabular foundation model into interpretable models reduce predictive multiplicity?
+
+## Research question
+Do TabICLv2's predictions exhibit lower predictive multiplicity than EBM/NAM trained on
+hard labels, and does replacing hard labels with TabICLv2's soft probabilities transfer that
+stability to the interpretable models — **without losing AUROC**?
+
+**Hypothesis:** (H1) TabICLv2 has lower ambiguity/discrepancy than hard-label EBM/NAM at equal
+or better AUROC. (H2) EBM/NAM distilled from TabICLv2 soft probs land strictly inside the
+(multiplicity, AUROC) Pareto frontier traced by their hard-label counterparts.
+
+**Decision rule.**
+*Supports:* on **both** datasets and **both** model families, distilled ambiguity drops by
+≥25% relative (bootstrap 95% CI excluding 0) while test AUROC is non-inferior — CI lower bound
+of ΔAUROC above −0.005.
+*Refutes:* ambiguity drop is <10% relative, OR AUROC falls below the non-inferiority margin.
+*Inconclusive:* effects present on one dataset only → report as dataset-dependent, do not claim H2.
+
+## Setup
+| | |
+|---|---|
+| Data | `data/adult/adult.csv` (48,842 × 14, binary income); `data/Taiwan/Taiwan.csv` (30,000 × 23, binary default, ~22% positive) |
+| Method(s) | TabICLv2 (in-context, no gradient training); EBM (`interpretml/interpret`); NAM (PyTorch port of `google-research/neural_additive_models`) |
+| Baselines | B0 logistic regression (trivial); B1 hard-label EBM; B2 hard-label NAM; B3 TabICLv2 itself |
+| Primary metric | Test **AUROC** |
+| Secondary metrics | **Ambiguity** and **discrepancy** (Marx et al. 2020) over the 30-model set. Log loss is computed but not reported: it is what model selection and the Rashomon filter use |
+| Compute budget | SLURM cluster, GPU partition. Est. total ≈ 45 GPU-h (see Runs) |
+| Seeds | 30 (`0..29`) |
+| Loss | Baselines/controls: binary cross-entropy on hard labels. Distilled: **soft cross-entropy** `−[p·log q + (1−p)·log(1−q)]` against the TabICLv2 probability `p`; hard labels discarded entirely |
+
+## Assumptions
+- [ ] TabICLv2 is available as a pip-installable package with a scikit-learn-style
+      `predict_proba`, and its context window admits ≥30k training rows on the target GPU.
+      If not, contexts are subsampled to the largest feasible size and this becomes a
+      documented limitation. **[DECIDE]** confirm package name/version before Phase 0.
+- [ ] The NAM reference implementation is TF1; we reimplement in PyTorch (ExU + feature-net
+      dropout + output penalty) and validate against published Adult AUROC ≈ 0.907 ± 0.005.
+- [ ] `fnlwgt` (Adult) is a census sampling weight, not a predictive feature → dropped.
+- [ ] Taiwan `EDUCATION ∈ {0,5,6}` and `MARRIAGE = 0` are undocumented → folded into "others".
+- [ ] Sensitive attributes (`race`, `gender`, `SEX`) are kept as features; this study measures
+      multiplicity, not fairness. **[DECIDE]** confirm — dropping them changes every run.
+
+## Plan
+
+### Phase 0 — Environment and scaffolding
+- [ ] **0.1** `uv init`; pin Python 3.11; add `interpret`, `torch`, `scikit-learn`, `pandas`,
+      `pyarrow`, `wandb`, `omegaconf`, `numpy`, `scipy`, `matplotlib`, TabICLv2. · *produces:*
+      `pyproject.toml`, `uv.lock` · *done when:* `uv sync --locked` is clean on a login node
+      and a GPU node.
+- [ ] **0.2** `Taskfile.yml` with `setup`, `lock`, `data`, `softlabels`, `train`, `eval`,
+      `figures`, `all`, `wandb:sync`, `clean`. Every task shells into `uv run`. · *done when:*
+      `task --list` shows all targets and `task setup` succeeds from a clean clone.
+- [ ] **0.3** W&B wrapper reading `WANDB_MODE ∈ {online, offline, disabled}`, project
+      `tfm-distill-multiplicity`, run name `{dataset}-{model}-{arm}-s{seed}`, group `{dataset}-{model}`,
+      job_type `{arm}`; offline dir `wandb/offline-run-*`. `task wandb:sync` runs
+      `uv run wandb sync --sync-all wandb/` and, on success, marks synced runs. · *done when:*
+      an offline smoke run appears in the web UI after `task wandb:sync`.
+- [ ] **0.4** Every run logs config hash, `git rev-parse HEAD`, `uv.lock` hash, dataset SHA256,
+      seed. · *done when:* a run refuses to start on a dirty working tree unless `ALLOW_DIRTY=1`.
+
+### Phase 1 — Data (cheap, blocking for everything)
+- [ ] **1.1** Loaders. Taiwan: the CSV carries a **two-row header** (`X1..X23` then real names)
+      — read with `header=1`, drop `ID`. Adult: treat `?` as NA. · *produces:*
+      `data/interim/{adult,taiwan}.parquet` · *done when:* shapes are (48842, 15) and (30000, 24)
+      and a schema assertion passes.
+- [ ] **1.2** Cleaning: drop exact duplicate rows **before** splitting (Adult has ~50 known
+      duplicates → otherwise the same row can land in two splits); drop `fnlwgt`; drop `education` (redundant with
+      `educational-num`); collapse the undocumented Taiwan categories; keep NA as an explicit
+      `"Missing"` category rather than imputing. · *produces:* `data/processed/{ds}.parquet` +
+      `data/processed/{ds}_cleaning_report.json` · *done when:* zero duplicate rows and the
+      report's dropped-row count is logged.
+- [ ] **1.3** Fixed stratified split 60/20/20 → train/val/test with `split_seed=0`, held
+      **identical across all 30 model seeds** (ambiguity/discrepancy are defined pointwise on a
+      common test set). · *produces:* `data/processed/{ds}_splits.json` (row-index lists + hashes)
+      · *done when:* per-split positive rate is within 0.5pp of the pooled rate and the three
+      index sets are provably disjoint.
+- [ ] **1.4** Two feature views built with transformers **fit on train only**: `raw` (TabICLv2,
+      categoricals as strings), `encoded` (NAM: standardised numerics + one-hot per categorical).
+      EBM consumes `raw` directly. · *produces:* `data/processed/{ds}_{view}.parquet` +
+      pickled fitted transformer · *done when:* a test asserts the scaler's mean equals the
+      train mean and does **not** equal the pooled mean.
+
+### Phase 2 — TabICLv2 soft labels (cross-fitted)
+- [ ] **2.1** Feasibility probe on 5% of Adult: run TabICLv2 end-to-end, record wall-clock and
+      peak GPU memory. · *done when:* extrapolated full-context runtime fits one SLURM job; if
+      not, record the maximum feasible context size and proceed with subsampling.
+- [ ] **2.2** **Cross-fitted** train soft labels: 5-fold stratified split *inside train*; for fold
+      k, context = train∖k, predict on fold k. This is the step that prevents in-context
+      memorisation from producing degenerate near-0/1 targets (see D2). · *produces:*
+      `artifacts/softlabels/{ds}_train_oof.parquet` · *done when:* the mean of the soft labels is
+      within 1pp of the train positive rate, and their entropy is **strictly greater** than that
+      of in-context (non-cross-fitted) probs on the same rows — assert this explicitly.
+- [ ] **2.3** Val soft labels: context = full train, predict on val. Test is **never** given soft
+      labels; test is always scored against true labels. · *produces:*
+      `artifacts/softlabels/{ds}_val.parquet` · *done when:* val AUROC of the soft labels is
+      logged and is ≥ the trivial baseline.
+- [ ] **2.4** TabICLv2 model set for B3: for `seed ∈ 0..29`, context = stratified bootstrap of
+      train (same resampling protocol as every other method, see D3), predict on test. ·
+      *produces:* `artifacts/preds/{ds}_tabicl_s{seed}.parquet` · *done when:* 30 files exist and
+      pairwise-identical prediction vectors number 0.
+
+### Phase 3 — Sanity phase (run before the real sweeps)
+- [ ] **3.1** Degenerate check: 30 EBM fits with resampling disabled and seed fixed → ambiguity
+      and discrepancy must both be exactly 0. · *done when:* metric code returns 0.0.
+- [ ] **3.2** Single-seed reproduction: hard-label EBM and NAM on Adult hit AUROC within 0.01 of
+      published values (EBM ≈ 0.927, NAM ≈ 0.907). · *done when:* both match, else stop and debug.
+
+### Phase 4 — Main sweep
+- [ ] **4.1** For each `(dataset, model ∈ {EBM, NAM}, arm ∈ {hard, distilled}, seed ∈ 0..29)`:
+      resample train per D3, train, early-stop/select on **val** (val AUROC for `hard`; val soft
+      cross-entropy against TabICLv2 probs for `distilled` — this is the "one validation step on
+      the probs" you asked for), predict on the frozen test set. · *produces:*
+      `artifacts/preds/{ds}_{model}_{arm}_s{seed}.parquet`, one W&B run each · *done when:*
+      240 prediction files exist and each logs its selected hyperparameters.
+- [ ] **4.2** Hyperparameters fixed across seeds and tuned once per (dataset, model, arm) on val
+      with a small random search (≤20 configs, `tune_seed=1000`), so seed-to-seed spread reflects
+      training randomness only. · *produces:* `configs/tuned/*.yaml` · *done when:* configs are
+      committed and referenced by hash in every run.
+- [ ] **4.3** Checkpoint per (model, arm, seed) to `artifacts/ckpt/`; the SLURM array skips work
+      whose output parquet already exists. · *done when:* a killed and resubmitted array
+      re-runs only the missing cells.
+
+### Phase 5 — Analysis
+- [ ] **5.1** Metric module: ambiguity = fraction of test points where ≥1 of the 30 models
+      disagrees with the reference (seed-0) model at threshold 0.5; discrepancy = max over models
+      of the disagreement rate against that reference, reported alongside a reference-free max
+      over all 435 model pairs. · *produces:*
+      `src/metrics/multiplicity.py` + unit tests on hand-built toy sets with known answers ·
+      *done when:* tests pass, including the all-identical (0.0) and all-opposite (1.0) cases.
+- [ ] **5.2** Rashomon filter: report metrics both over all 30 models and over the subset within
+      ε = 0.01 val log-loss of the best. · *done when:* both variants are in the results table.
+- [ ] **5.3** Uncertainty: BCa bootstrap (2,000 resamples) over **test points** for each metric,
+      and paired bootstrap for arm differences. Holm correction over the 4 primary comparisons
+      (2 datasets × 2 models × 1 arm-pair). · *done when:* every headline number carries a CI.
+- [ ] **5.4** Apply the decision rule verbatim and write the verdict into `results/verdict.md`
+      **before** any figure polishing. · *done when:* the file states supports/refutes/inconclusive.
+
+## Runs
+| Run | Condition | Varies | Seeds | Est. time |
+|---|---|---|---|---|
+| R0 | Soft-label generation (2.2–2.3) | dataset × fold | — | 12 jobs, ~4 GPU-h |
+| R1 | B3 TabICLv2 on test | dataset × bootstrap | 30 | 60 jobs, ~15 GPU-h |
+| R2 | B1/B2 hard-label EBM, NAM | dataset × model | 30 | 120 jobs; EBM ~2 CPU-h, NAM ~15 GPU-h |
+| R3 | Distilled EBM, NAM (soft-only) | dataset × model | 30 | 120 jobs, ~17 GPU-h |
+| R4 | B0 logistic regression | dataset | 30 | 60 jobs, minutes |
+
+## Figures
+| # | Question it answers | Type | x / y | Notes |
+|---|---|---|---|---|
+| F1 | Is distillation a free lunch? | Scatter, Pareto frontier | ambiguity / test AUROC | One point per (model, arm, dataset); 95% CI crosshairs; the headline figure |
+| F2 | How large is the multiplicity gap? | Grouped bar + CI | arm / ambiguity & discrepancy | Facet by dataset; TabICLv2 as a horizontal reference line |
+| F3 | Does it hold across the accuracy range? | Line | decision threshold / ambiguity | Guards against a threshold-0.5 artifact |
+| F4 | Do explanations stabilise too? | Box | arm / rank correlation of feature importances between seed pairs | Supports the "natively provides explanations" claim in the README |
+
+## Risks and mitigations
+| Risk | Likelihood | Impact | Mitigation | Detect by |
+|---|---|---|---|---|
+| TabICLv2 is deterministic, so "TFM has less multiplicity" is trivially true | High | Fatal to H1 | Apply the identical bootstrap-resampling protocol to every method (D3); state plainly that a deterministic model has zero multiplicity by construction | Step 2.4's zero-identical-vectors check |
+| Soft labels reduce multiplicity merely by smoothing the loss surface, not because they came from TabICLv2 | High | The observed effect is real but misattributed | **None in this design** — the control that would isolate this was cut (D4). Report the effect as "soft distillation from TabICLv2 reduces multiplicity" and never as "TabICLv2's knowledge does" | Not detectable within this experiment |
+| Multiplicity traded for accuracy (a constant model has zero ambiguity) | Med | Invalidates the claim | Never report multiplicity alone — F1 Pareto plane and the AUROC non-inferiority clause in the decision rule | ΔAUROC CI |
+| In-context memorisation makes train soft labels near-0/1 and useless | High | Distillation collapses to hard labels | 5-fold cross-fitting (2.2) + the explicit entropy assertion | Entropy check in 2.2 |
+| 30 seeds too few for a small ambiguity difference | Med | Underpowered | Ambiguity is a per-test-point statistic over ~6–10k points, so CIs come from the point bootstrap, not from n=30; if CIs still straddle 0, raise to 50 seeds for the affected cell | Width of the 5.3 CIs |
+| NAM reimplementation is subtly wrong | Med | Silences one model family | Phase 3.3 reproduces published AUROC before any sweep | 3.3 gate |
+| Cluster quota / GPU queue delays | Med | Schedule | SLURM array with idempotent skip (4.3); EBM arm runs CPU-only and can proceed independently | Queue wait times |
+
+## Technical decisions
+
+### D1 — Fixed data partition, varied training randomness
+**Chose:** one stratified 60/20/20 split (`split_seed=0`) shared by every run.
+**Over:** resampling the split per seed.
+**Because:** ambiguity and discrepancy are defined as disagreement over a *common* set of test
+points; a moving test set makes them incomparable. It also isolates multiplicity arising from
+the training procedure — precisely the quantity distillation is claimed to reduce.
+**Revisit if:** a reviewer asks about split sensitivity — then add 5 outer splits × 30 seeds as a
+nested robustness check, at 5× cost.
+
+### D2 — Cross-fitted (out-of-fold) soft labels
+**Chose:** 5-fold cross-fitting inside the training set to produce TabICLv2 probabilities.
+**Over:** a single pass with the full training set as context, predicting on those same rows.
+**Because:** an in-context learner that has the target row in its context reproduces its label
+almost exactly. The resulting probabilities would be near-degenerate, distillation would
+degenerate into hard-label training, and H2 would be untestable through no fault of the
+hypothesis. Cross-fitting costs 5× inference and buys honest targets.
+**Revisit if:** the entropy assertion in 2.2 shows non-cross-fitted probs are already
+well-calibrated — then a single pass is 5× cheaper.
+
+### D3 — One randomness protocol for all methods
+**Chose:** for seed *s*, every method sees a stratified bootstrap resample of the training set,
+seeded with *s*, plus its own internal seed *s*.
+**Over:** letting each method use whatever randomness it natively has (EBM bagging, NAM init,
+TabICLv2 none).
+**Because:** the H1 comparison is only meaningful if the model sets are generated by the same
+perturbation. Otherwise "TabICLv2 has less multiplicity" reduces to "TabICLv2 is deterministic",
+which is a statement about the API, not about the method.
+**Revisit if:** the target claim shifts to init-only multiplicity — then hold the resample fixed
+and vary initialisation alone, and report both.
+
+### D4 — No smoothing control
+**Chose:** compare the distilled arm against hard-label training only.
+**Over:** a self-distillation control, in which each interpretable model is distilled from
+cross-fitted probabilities produced by its own family.
+**Because:** the two-arm design is a third smaller and simpler to run and to write up. The cost
+is specific and must be stated wherever the result is: soft targets flatten the loss landscape
+and shrink the effective hypothesis space regardless of where they come from, so this
+experiment cannot separate "TabICLv2's knowledge stabilises the student" from "any soft target
+stabilises the student". The defensible claim is therefore about the *pipeline* — distilling
+from TabICLv2 reduces multiplicity — and not about the foundation model's knowledge being what
+does the work.
+**Revisit if:** a reviewer asks what the soft labels contribute beyond smoothing, or the
+preliminary results become a full paper. Reinstating it costs one extra arm (120 runs,
+≈17 GPU-h) and no new code paths beyond a second cross-fitting teacher.
+
+### D5 — AUROC as the primary metric
+**Chose:** test AUROC, with a −0.005 non-inferiority margin.
+**Over:** accuracy@0.5 (distorted by Taiwan's ~22% positive rate) and log loss (a proper scoring
+rule, but it is what the distilled arm directly optimises, which would bias the comparison
+toward distillation).
+**Because:** threshold-free, standard on both datasets, and independent of the training
+objective. Nothing else is reported: a wide secondary panel invites reading whichever metric
+happens to favour the hypothesis, and the decision rule only ever consults AUROC. Log loss is
+still computed, but purely as machinery — model selection and the Rashomon filter need it.
+**Revisit if:** the deployment framing becomes cost-sensitive — then switch to AUPRC or expected
+cost at a fixed operating point; or if a reviewer challenges calibration, in which case add
+Brier and ECE as an explicit follow-up rather than folding them into the primary result.
+
+### D6 — Soft-probability-only distillation objective
+**Chose:** train the student purely on TabICLv2 probabilities; discard hard labels.
+**Over:** the standard blended `α·soft + (1−α)·hard` KD loss.
+**Because:** a blend introduces α as a free knob that trades the two hypotheses against each
+other and makes any observed multiplicity reduction unattributable. Soft-only is the clean test.
+**Revisit if:** soft-only loses more than the non-inferiority margin on AUROC — then sweep
+α ∈ {0.25, 0.5, 0.75} as a documented follow-up, reported separately from the primary result.
+
+### D7 — uv + Taskfile + W&B offline-first
+**Chose:** `uv` with a committed `uv.lock`; every entry point behind a Taskfile target; W&B in
+offline mode on compute nodes with a separate `task wandb:sync` step.
+**Over:** conda, and online-only logging.
+**Because:** GPU nodes on most SLURM clusters have no outbound network, so an online-only logger
+either fails the job or blocks it. Offline-first with an explicit sync keeps runs identical
+whether or not the node is connected. The lockfile plus per-run git and lock hashes make any
+figure traceable to an exact environment.
+**Revisit if:** the cluster provides network on compute nodes — `WANDB_MODE=online` already works.
+
+## Out of scope
+- Attributing the effect to TabICLv2 specifically rather than to soft targets in general;
+  see D4. This experiment measures the pipeline, not the teacher's knowledge.
+- Leakage auditing. Deduplication before splitting and train-only transformer fitting are
+  done as a matter of correct preprocessing; the experiment runs no checks to confirm the
+  absence of leakage and makes no claim about it.
+- Calibration quality (Brier, ECE) and threshold-dependent performance (accuracy, AUPRC).
+- Per-point score-level multiplicity, e.g. prediction variance and Rashomon Capacity —
+  multiplicity here is decision-level only.
+- Fairness or disparate-impact analysis of the multiplicity findings.
+- Datasets beyond Adult and Taiwan; no claim of generality across tabular tasks.
+- Comparison against non-interpretable strong baselines (XGBoost, CatBoost) — TabICLv2 stands in
+  as the performance ceiling.
+- Rashomon-set enumeration over hyperparameters; multiplicity here is seed/resample multiplicity
+  at fixed hyperparameters.
+- Human-subject evaluation of whether the resulting explanations are actually more useful.

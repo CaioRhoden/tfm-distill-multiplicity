@@ -1,0 +1,163 @@
+version: '3'
+
+# Every stage of the experiment runs through this file. Nothing in the project is
+# invoked another way, so a run recorded in W&B always corresponds to a target here.
+
+env:
+  # Offline is the default: cluster compute nodes usually have no outbound network,
+  # and an online-only logger either fails the job or blocks it. `task wandb:sync`
+  # pushes the runs afterwards.
+  WANDB_MODE: '{{.WANDB_MODE | default "offline"}}'
+  WANDB_PROJECT: tfm-distill-multiplicity
+  PYTHONHASHSEED: '0'
+
+vars:
+  RUN: uv run tfmdm
+  DATASETS: adult taiwan
+  MODELS: ebm nam
+
+tasks:
+  default:
+    cmds: [task --list]
+
+  # --- environment -------------------------------------------------------------
+  setup:
+    desc: Create the virtualenv from the lockfile (no resolution, fully reproducible)
+    cmds:
+      - uv sync --locked --all-groups
+      - '{{.RUN}} --help > /dev/null'
+
+  lock:
+    desc: Re-resolve dependencies and refresh uv.lock; commit the result
+    cmds:
+      - uv lock --upgrade
+      - uv sync --all-groups
+
+  setup:tabicl:
+    desc: Install the TabICLv2 extra (pin the distribution name in pyproject.toml first)
+    cmds: [uv sync --locked --all-groups --extra tabicl]
+
+  test:
+    desc: Unit tests (metric identities, preprocessing correctness, cross-fitting guards)
+    cmds: [uv run pytest -q]
+
+  fmt:
+    cmds: [uv run ruff format src tests, uv run ruff check --fix src tests]
+
+  lint:
+    cmds: [uv run ruff check src tests]
+
+  # --- phase 1 -----------------------------------------------------------------
+  data:
+    desc: 'Phase 1: clean, deduplicate, split 60/20/20, build the raw and encoded views'
+    cmds:
+      - for: { var: DATASETS, split: ' ' }
+        cmd: '{{.RUN}} data --dataset {{.ITEM}}'
+
+  # --- phase 2 -----------------------------------------------------------------
+  tabicl:probe:
+    desc: 'TabICLv2 feasibility probe on 5% of the data'
+    cmds:
+      - for: { var: DATASETS, split: ' ' }
+        cmd: '{{.RUN}} probe --dataset {{.ITEM}}'
+
+  tabicl:softlabels:
+    desc: 'Phase 2.2-2.3: cross-fitted TabICLv2 probabilities for the distilled arm'
+    deps: [data]
+    cmds:
+      - for: { var: DATASETS, split: ' ' }
+        cmd: '{{.RUN}} softlabels --dataset {{.ITEM}}'
+
+  tabicl:preds:
+    desc: 'baseline tabicl'
+    deps: [data]
+    cmds:
+      - for: { var: DATASETS, split: ' ' }
+        cmd: |
+          for s in $(seq 0 29); do {{.RUN}} tabicl-preds --dataset {{.ITEM}} --seed $s; done
+
+  # --- phase 3 -----------------------------------------------------------------
+  sanity:
+    desc: 'degenerate and reproduction gates. The sweep waits on this.'
+    deps: [data]
+    cmds: ['{{.RUN}} sanity --datasets {{.DATASETS}} --models {{.MODELS}}']
+
+  # --- phase 4 -----------------------------------------------------------------
+  tune:
+    desc: 'one random search per (dataset, model, arm), shared by all 30 seeds'
+    cmds:
+      - |
+        for d in {{.DATASETS}}; do for m in {{.MODELS}}; do
+          for a in hard distilled; do
+            {{.RUN}} tune --dataset $d --model $m --arm $a
+          done
+        done; done
+
+  train:
+    desc: 'One cell. Usage: task train -- --dataset adult --model ebm --arm hard --seed 0'
+    cmds: ['{{.RUN}} train {{.CLI_ARGS}}']
+
+  sweep:
+    desc: 'all cells in sequence. Prefer task slurm on a cluster.'
+    cmds: ['{{.RUN}} sweep --datasets {{.DATASETS}} --models {{.MODELS}}']
+
+  cells:
+    desc: Print the sweep grid, one JSON object per line
+    cmds: ['{{.RUN}} cells --datasets {{.DATASETS}} --models {{.MODELS}}']
+
+  slurm:
+    desc: Submit the sweep as a SLURM array (idempotent; resubmitting reruns only gaps)
+    cmds:
+      - |
+        N=$({{.RUN}} cells --datasets {{.DATASETS}} --models {{.MODELS}} | wc -l)
+        echo "Submitting $N cells"
+        sbatch --array=0-$((N-1))%32 scripts/sweep.slurm
+
+  # --- phase 5 -----------------------------------------------------------------
+  analyze:
+    desc: 'Phase 5.1-5.3: multiplicity, performance, bootstrap intervals, Holm-corrected tests'
+    cmds: ['{{.RUN}} analyze --datasets {{.DATASETS}}']
+
+  verdict:
+    desc: 'Phase 5.4: apply the pre-registered decision rule to results/'
+    deps: [analyze]
+    cmds: ['{{.RUN}} verdict --datasets {{.DATASETS}} --models {{.MODELS}}']
+
+  figures:
+    desc: Render F1-F4 into results/figures/
+    cmds: ['{{.RUN}} figures --datasets {{.DATASETS}} --models {{.MODELS}}']
+
+  all:
+    desc: The full pipeline in order. Stops at the first failing gate.
+    cmds:
+      - task: data
+      - task: sanity
+      - task: softlabels
+      - task: tabicl:preds
+      - task: tune
+      - task: sweep
+      - task: analyze
+      - task: verdict
+      - task: figures
+
+  # --- W&B ---------------------------------------------------------------------
+  wandb:sync:
+    desc: Push every offline run to W&B (run this from a node with network access)
+    cmds:
+      - uv run wandb sync --sync-all --include-offline wandb/
+      - echo "Synced. Offline directories are kept; remove them with task wandb:clean."
+
+  wandb:online:
+    desc: Re-run a target with live logging, e.g. task wandb:online -- data
+    cmds: ['WANDB_MODE=online task {{.CLI_ARGS}}']
+
+  wandb:clean:
+    desc: Delete offline run directories that have already been synced
+    cmds: [uv run wandb sync --clean --clean-old-hours 0 wandb/]
+
+  # --- housekeeping ------------------------------------------------------------
+  clean:
+    desc: Remove derived data, predictions and results. Raw data is never touched.
+    cmds:
+      - rm -rf data/interim data/processed artifacts results
+      - echo "Removed derived artifacts. Raw CSVs under data/ are untouched."

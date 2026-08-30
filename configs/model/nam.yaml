@@ -1,0 +1,20 @@
+name: nam
+view: encoded                # standardised numerics + one-hot categoricals
+params:
+  hidden_sizes: [64, 32]
+  num_basis_functions: 64    # width of the ExU first layer
+  activation: exu            # exu | relu
+  dropout: 0.1               # dropout inside each feature net
+  feature_dropout: 0.05      # drop whole feature contributions
+  output_penalty: 0.0001     # lambda on mean squared feature outputs
+  l2: 0.0
+  lr: 0.001
+  batch_size: 1024
+  max_epochs: 200
+  patience: 15
+search_space:
+  lr: [0.0003, 0.001, 0.003]
+  dropout: [0.0, 0.1, 0.2]
+  feature_dropout: [0.0, 0.05, 0.1]
+  output_penalty: [0.0, 0.0001, 0.001]
+  hidden_sizes: [[64, 32], [128, 64], [32]]

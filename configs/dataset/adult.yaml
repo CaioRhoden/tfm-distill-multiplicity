@@ -1,0 +1,25 @@
+name: adult
+raw_path: data/adult/adult.csv
+read_kwargs:
+  na_values: ["?", " ?"]
+  skipinitialspace: true
+target: income
+positive_label: ">50K"
+drop_columns:
+  - fnlwgt          # census sampling weight, not a predictive feature
+  - education       # redundant with educational-num
+numeric:
+  - age
+  - educational-num
+  - capital-gain
+  - capital-loss
+  - hours-per-week
+categorical:
+  - workclass
+  - marital-status
+  - occupation
+  - relationship
+  - race
+  - gender
+  - native-country
+recode: {}

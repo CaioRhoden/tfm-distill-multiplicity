@@ -1,0 +1,16 @@
+name: ebm
+view: raw                    # EBM consumes native dtypes, categoricals as strings
+params:
+  max_bins: 256
+  interactions: 0            # purely additive -> directly comparable to NAM
+  learning_rate: 0.02
+  max_rounds: 5000
+  early_stopping_rounds: 50
+  outer_bags: 8
+  inner_bags: 0
+search_space:
+  learning_rate: [0.005, 0.01, 0.02, 0.05]
+  max_bins: [128, 256, 512]
+  outer_bags: [4, 8, 16]
+  min_samples_leaf: [2, 5, 10]
+  smoothing_rounds: [0, 100, 200]

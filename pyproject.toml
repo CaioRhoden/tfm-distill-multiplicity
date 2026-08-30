@@ -1,0 +1,49 @@
+[project]
+name = "tfmdm"
+version = "0.1.0"
+description = "Distilling a tabular foundation model into interpretable models to reduce predictive multiplicity"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { file = "LICENSE" }
+authors = [{ name = "Caio Rhoden", email = "caiorhoden@gmail.com" }]
+
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "pyarrow>=16.0",
+    "scikit-learn>=1.5",
+    "scipy>=1.13",
+    "torch>=2.3",
+    "interpret>=0.6.3",
+    "wandb>=0.17",
+    "omegaconf>=2.3",
+    "matplotlib>=3.9",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+# The TabICLv2 distribution name is an open [DECIDE] item in the plan. Pin it here
+# once confirmed, then `uv sync --extra tabicl`. Until then the backend can be run
+# with TFMDM_TABICL_BACKEND=mock for pipeline smoke tests.
+tabicl = ["tabicl>=0.1"]
+
+[project.scripts]
+tfmdm = "tfmdm.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.2", "ruff>=0.5"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tfmdm"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
