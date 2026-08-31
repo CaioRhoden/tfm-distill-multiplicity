@@ -1,5 +1,6 @@
+from . import multiplicity
 from .bootstrap import bca_ci, holm, paired_bootstrap, percentile_ci
-from .multiplicity import MultiplicityResult, disagreement_matrix, multiplicity
+from .multiplicity import MultiplicityResult, disagreement_matrix
 from .performance import performance
 
 __all__ = [

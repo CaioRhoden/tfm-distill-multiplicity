@@ -7,8 +7,9 @@ from tfmdm.metrics import bootstrap as boot
 def test_holm_is_step_down_and_order_preserving():
     # With m=3 and alpha=0.05 the thresholds are 0.0167, 0.025, 0.05.
     assert boot.holm([0.001, 0.02, 0.9]) == [True, True, False]
-    # Step-down: once a hypothesis fails, nothing larger can be rejected.
-    assert boot.holm([0.001, 0.30, 0.02]) == [True, False, False]
+    # Step-down operates on sorted p-value order, not array position: 0.02 is the
+    # second-smallest here and still clears its rank-2 threshold (0.025).
+    assert boot.holm([0.001, 0.30, 0.02]) == [True, False, True]
 
 
 def test_holm_with_a_single_test_reduces_to_alpha():

@@ -82,7 +82,7 @@ def _balance_report(y: np.ndarray, split: SplitIndex) -> dict:
 
 def _assert_balanced(report: dict) -> None:
     bad = {k: report[k]["delta_pp"] for k in ("train", "val", "test")
-           if report[k]["delta_pp"] > BALANCE_TOLERANCE_PP}
+           if report[k]["delta_pp"] > BALANCE_TOLERANCE_PP + 1e-9}
     if bad:
         raise AssertionError(f"Split class balance drifted beyond {BALANCE_TOLERANCE_PP}pp: {bad}")
 

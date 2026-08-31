@@ -36,7 +36,8 @@ def clean(cfg: DictConfig, frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str,
     frame = frame.drop_duplicates(keep="first").reset_index(drop=True)
     report["duplicate_rows_dropped"] = int(before - len(frame))
 
-    recode = OmegaConf.to_container(ds.get("recode", {}) or {}, resolve=True)
+    recode_cfg = ds.get("recode", None)
+    recode = OmegaConf.to_container(recode_cfg, resolve=True) if recode_cfg else {}
     applied: dict[str, int] = {}
     for column, mapping in recode.items():  # type: ignore[union-attr]
         if column not in frame.columns:

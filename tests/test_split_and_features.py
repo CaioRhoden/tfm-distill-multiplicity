@@ -41,7 +41,7 @@ def test_splits_are_a_disjoint_cover_with_matched_class_balance():
     assert len(set(split.val) & set(split.test)) == 0
     assert split.train.size + split.val.size + split.test.size == len(frame)
     for part in ("train", "val", "test"):
-        assert report[part]["delta_pp"] <= split_mod.BALANCE_TOLERANCE_PP
+        assert report[part]["delta_pp"] <= split_mod.BALANCE_TOLERANCE_PP + 1e-9
 
 
 def test_split_is_deterministic_across_calls():

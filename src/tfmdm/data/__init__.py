@@ -1,4 +1,4 @@
-from .clean import clean
+from . import clean
 from .features import build_views, load_view
 from .loaders import load_raw
 from .split import SplitIndex, load_splits, make_splits

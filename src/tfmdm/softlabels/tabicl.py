@@ -87,8 +87,8 @@ class MockTabICL:
         from sklearn.preprocessing import OrdinalEncoder, StandardScaler
         from sklearn.compose import ColumnTransformer
 
-        cat = [c for c in context_x.columns if context_x[c].dtype == object]
-        num = [c for c in context_x.columns if c not in cat]
+        num = [c for c in context_x.columns if pd.api.types.is_numeric_dtype(context_x[c])]
+        cat = [c for c in context_x.columns if c not in num]
         pre = ColumnTransformer(
             [("num", StandardScaler(), num),
              ("cat", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1), cat)]

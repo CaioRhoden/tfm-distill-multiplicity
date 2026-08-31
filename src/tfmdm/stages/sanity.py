@@ -14,7 +14,8 @@ from .. import paths, seeds
 from ..config import load, to_dict
 from ..data import features as features_mod
 from ..data import load_splits
-from ..metrics import multiplicity, performance
+from ..metrics import performance
+from ..metrics.multiplicity import multiplicity
 from ..models import build
 
 # Published references for the Phase 3.2 reproduction gate.
