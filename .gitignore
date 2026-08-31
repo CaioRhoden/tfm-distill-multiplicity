@@ -233,3 +233,4 @@ plans/2026-08-30-tfm-distillation-multiplicity.md
 # SLURM job logs
 /logs/
 slurm/dataset_sweep.sh
+slurm/tune_sweep.sh
