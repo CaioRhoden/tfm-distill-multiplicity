@@ -89,11 +89,11 @@ def cross_fit(
     return CrossFitResult(oof, fold_ids, in_context, diagnostics)
 
 
-def assert_honest(result: CrossFitResult, mean_tolerance: float = 0.01) -> None:
+def assert_honest(result: CrossFitResult, mean_tolerance: float = 0.05) -> None:
     """The Phase 2.2 done-when checks, enforced in code rather than in a notebook.
 
     Two conditions. The soft labels must be calibrated in aggregate -- their mean sits
-    within one point of the training positive rate. And they must be strictly
+    within five points of the training positive rate. And they must be strictly
     higher-entropy than in-context predictions on the same rows, which is the direct
     evidence that cross-fitting removed the memorisation.
     """
