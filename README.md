@@ -73,6 +73,63 @@ SPLIT=3 task clean:split           # drop replicate 3 entirely
 installed, set `TFMDM_TABICL_BACKEND=mock` — it substitutes a logistic regression teacher, and
 is for plumbing checks only, never for a result.
 
+## Inputs and outputs per task
+
+Everything split-dependent lives under `artifacts/split{K}/` and `results/split{K}/`, keyed by
+`SPLIT_SEEDS`. `{ds}` is the dataset, `{K}` the split seed.
+
+**`data`** — Phase 1, one dataset end to end.
+- reads `data/{dataset}/{dataset}.csv` — the raw survey/census extract, untouched by anything else.
+- writes `data/interim/{ds}.parquet` — the raw CSV loaded and typed, before any cleaning.
+- writes `data/processed/{ds}.parquet` + `_cleaning_report.json` — the cleaned frame (missing/duplicate handling applied) and what was done to it; split-independent, so every replicate reuses it.
+- writes `artifacts/split{K}/splits/{ds}.json` — the frozen 60/20/20 train/val/test row indices for this replicate; this is the partition every downstream stage must agree on.
+- writes `artifacts/split{K}/views/{ds}_{view}.parquet` + `_encoder.joblib` — the feature matrices each model family consumes (e.g. raw vs. one-hot) and the fitted encoder that produced them, so test-time rows can be transformed identically.
+- writes `artifacts/split{K}/{ds}_data_summary.json` — row counts and class balance for this run, a quick sanity readout.
+
+**`sanity`** — Phase 3 gates, run before any real sweep so a broken metric or model wiring is caught in minutes, not after a full sweep.
+- reads `artifacts/split{K}/views/`, `splits/` — same feature views and partition `data` produced.
+- writes `results/split{K}/sanity.json` — pass/fail for the degenerate check (identical seed ⇒ zero multiplicity) and the reproduction check (hard-label AUROC against published reference numbers).
+
+**`tabicl:probe`** — Phase 2.1, a cheap dry run before committing to the full TabICLv2 grid.
+- reads `artifacts/split{K}/views/{ds}_raw.parquet` — only 5% of train/test, primary split only.
+- writes nothing; prints elapsed time and context size to stdout, to size the real jobs.
+
+**`tabicl:softlabels`** — Phase 2.2–2.3, the teacher signal the `distilled` arm trains on.
+- reads `artifacts/split{K}/views/{ds}_raw.parquet`, `splits/{ds}.json`.
+- writes `artifacts/split{K}/softlabels/{ds}_tabicl_train_oof.parquet` — out-of-fold TabICLv2 probabilities for every training row (cross-fitted so a row's own label never leaks into its own prediction).
+- writes `..._val.parquet` — TabICLv2 probabilities for the validation rows, context = full training set.
+- writes `..._diagnostics.json` — the entropy-guard check (soft labels must be less confident than in-context predictions) plus OOF/val performance.
+
+**`tabicl:preds`** — Phase 2.4, the TabICLv2 baseline (B3): 30 perturbed "model set" members, one per seed.
+- reads `artifacts/split{K}/views/{ds}_raw.parquet`, `splits/{ds}.json`.
+- writes `artifacts/split{K}/preds/{ds}_tabicl_incontext_s{seed}.parquet` — val/test predicted probabilities for that seed's bootstrapped context, in the same schema every trained model's predictions use, so `analyze` treats all methods uniformly.
+
+**`tune`** — Phase 4.2, one hyperparameter search per (dataset, model, arm, split), shared by all 30 run seeds so search noise doesn't get counted as training-seed multiplicity.
+- reads `artifacts/split{K}/views/`, `splits/`, and softlabels (only for the `distilled` arm's target).
+- writes `configs/tuned/split{K}/{ds}_{model}_{arm}.yaml` — the winning hyperparameters, committed to the repo and read by every `train` run of that cell family.
+- writes `..._trials.json` — every trial tried, for auditing the search.
+
+**`train` / `train:group` / `sweep` / `slurm`** — Phase 4.1, fitting the interpretable models (EBM/NAM) on either hard labels or distilled soft labels.
+- reads `artifacts/split{K}/views/`, `splits/`, softlabels (for `distilled`), `configs/tuned/split{K}/` (if a tuned config exists).
+- writes `artifacts/split{K}/preds/{ds}_{model}_{arm}_s{seed}.parquet` — that seed's val/test predicted probabilities, the input `analyze` scores.
+- writes `artifacts/split{K}/models/{ds}_{model}_{arm}_s{seed}.joblib` — the fitted model itself, for later inspection.
+- writes `..._importances.json` — per-feature importances, when the model type supports them; used by figure F4 (explanation stability).
+
+**`analyze`** — Phase 5.1–5.3, turns raw predictions into the study's actual measurements.
+- reads `artifacts/split{K}/preds/*` — every arm's predictions for this split.
+- writes `results/split{K}/arm_summaries.csv` — per (dataset, model, arm) multiplicity (ambiguity/discrepancy) and AUROC, with bootstrap intervals.
+- writes `comparisons.csv` — hard-vs-distilled and interpretable-vs-TabICLv2 deltas, Holm-corrected p-values, and the H1/H2 decision flags.
+- writes `aggregate.json` — the same content as one file, for programmatic reuse.
+
+**`combine`** — pools replicates into the robustness readout: does the effect survive re-drawing the partition, or was it an artifact of one split?
+- reads `results/split{K}/comparisons.csv` for every split in `SPLIT_SEEDS`.
+- writes `results/across_splits.csv` — median/min/max delta and how many splits' intervals clear zero, per (dataset, model, metric).
+- writes `results/all_comparisons.csv` — every split's comparisons concatenated, for custom slicing.
+
+**`figures`** — renders the paper's headline plots for one split.
+- reads `results/split{K}/arm_summaries.csv`, `artifacts/split{K}/preds/*_importances.json`.
+- writes `results/split{K}/figures/` — F1 (multiplicity vs. AUROC pareto), F2 (bar comparison), F3 (threshold sensitivity), F4 (explanation stability) as PNGs, plus `explanation_stability.csv` backing F4.
+
 ## The sweep
 
 One SLURM job is a **group** — all 30 run seeds of one (dataset, model, arm, split) — because
@@ -91,20 +148,6 @@ The array index *is* the grid coordinate: `tfmdm groups --index $SLURM_ARRAY_TAS
 by both the submitting shell and each worker, so there is no manifest that can drift. Any run
 seed whose prediction file already exists is skipped, so a partially-failed array is resubmitted
 with the identical command and resumes at the gaps.
-
-## Weights & Biases
-
-Offline is the default, because cluster compute nodes usually have no outbound network and an
-online-only logger either fails the job or blocks it. Runs land in `wandb/offline-run-*`.
-
-```bash
-task wandb:sync                    # push every offline run, from a node with network
-WANDB_MODE=online task data        # or log live
-task wandb:online -- analyze       # same, for any target
-```
-
-Every run records its git commit, `uv.lock` hash, dataset SHA256, seed and resolved config. A
-run started from a dirty working tree is refused unless `ALLOW_DIRTY=1`.
 
 ## Layout
 
