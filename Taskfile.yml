@@ -187,7 +187,7 @@ tasks:
 
   wandb:clean:
     desc: Delete offline run directories that have already been synced
-    cmds: [uv run wandb sync --clean --clean-old-hours 0 wandb/]
+    cmds: [uv run wandb clean --min-hours 0 --force]
 
   # --- housekeeping ------------------------------------------------------------
   clean:

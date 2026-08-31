@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass
 from typing import Iterable
 
+import joblib
 import numpy as np
 import pandas as pd
 
@@ -123,6 +124,8 @@ def _train_one(ctx: GroupContext, dataset: str, model: str, arm: str,
         "prob": np.concatenate([p_val, p_test]),
         "y_true": np.concatenate([ctx.y_val, ctx.y_test]),
     }).to_parquet(paths.preds(dataset, model, arm, seed, split_seed), index=False)
+
+    joblib.dump(learner, paths.model_artifact(dataset, model, arm, seed, split_seed))
 
     try:
         paths.importances(dataset, model, arm, seed, split_seed).write_text(

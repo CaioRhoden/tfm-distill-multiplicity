@@ -78,6 +78,11 @@ def importances(dataset: str, model: str, arm: str, seed: int, split_seed: int) 
             / f"{dataset}_{model}_{arm}_s{seed}_importances.json")
 
 
+def model_artifact(dataset: str, model: str, arm: str, seed: int, split_seed: int) -> Path:
+    return (split_root(split_seed) / "models"
+            / f"{dataset}_{model}_{arm}_s{seed}.joblib")
+
+
 def tuned_config(dataset: str, model: str, arm: str, split_seed: int) -> Path:
     """Tuned hyperparameters live under configs/ so they can be committed.
 
@@ -101,7 +106,7 @@ def ensure_dirs(split_seed: int | None = None) -> None:
     if split_seed is None:
         return
     root = split_root(split_seed)
-    for name in ("splits", "views", "softlabels", "preds"):
+    for name in ("splits", "views", "softlabels", "preds", "models"):
         (root / name).mkdir(parents=True, exist_ok=True)
     figures_dir(split_seed).mkdir(parents=True, exist_ok=True)
     (TUNED / f"split{split_seed}").mkdir(parents=True, exist_ok=True)
