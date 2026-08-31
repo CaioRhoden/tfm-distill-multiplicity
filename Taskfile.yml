@@ -17,7 +17,7 @@ vars:
   MODELS: ebm nam
   ARMS: hard distilled
   # Split replicates. Override per invocation: SPLIT_SEEDS='0 1' task data
-  SPLIT_SEEDS: '{{.SPLIT_SEEDS | default "0 1 2 3 4"}}'
+  SPLIT_SEEDS: '{{.SPLIT_SEEDS | default "0"}}'
   # Run seeds per SLURM job. Empty = all 30 in one job; set e.g. 10 for more parallelism.
   CHUNK: '{{.CHUNK | default ""}}'
 
@@ -139,6 +139,19 @@ tasks:
         sbatch --array=0-$((N-1))%16 \
           --export=ALL,TFMDM_DATASETS,TFMDM_MODELS,TFMDM_ARMS,TFMDM_SPLIT_SEEDS,TFMDM_CHUNK \
           scripts/sweep.slurm
+
+  tune:slurm:
+    desc: Submit the tuning sweep as a SLURM array, one job per (dataset, model, arm, split)
+    cmds:
+      - |
+        export TFMDM_DATASETS='{{.DATASETS}}' TFMDM_MODELS='{{.MODELS}}'
+        export TFMDM_ARMS='{{.ARMS}}' TFMDM_SPLIT_SEEDS='{{.SPLIT_SEEDS}}'
+        N=$(( $(wc -w <<<"$TFMDM_DATASETS") * $(wc -w <<<"$TFMDM_MODELS") \
+              * $(wc -w <<<"$TFMDM_ARMS") * $(wc -w <<<"$TFMDM_SPLIT_SEEDS") ))
+        echo "Submitting $N tuning cells"
+        sbatch --array=0-$((N-1))%4 \
+          --export=ALL,TFMDM_DATASETS,TFMDM_MODELS,TFMDM_ARMS,TFMDM_SPLIT_SEEDS \
+          slurm/tune_sweep.sh
 
   # --- phase 5 -----------------------------------------------------------------
   analyze:
