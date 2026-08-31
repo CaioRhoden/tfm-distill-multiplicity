@@ -154,6 +154,28 @@ def summarise_arm(result: ArmResult, cfg) -> dict:
     return summary
 
 
+def seed_summaries(result: ArmResult, cfg) -> list[dict]:
+    """One row per seed: test-set performance, unaggregated.
+
+    Companion to ``summarise_arm``, which collapses these across seeds -- this keeps
+    the per-seed values so downstream analysis can look at variance directly instead
+    of only the mean/std ``combine`` would otherwise be limited to.
+    """
+    probs, y = result.test_probs, result.y_true
+    keep = result.rashomon_mask(float(cfg.eval.rashomon_eps))
+    rows = []
+    for j, seed in enumerate(result.seeds):
+        metrics = performance(y, probs[:, j])
+        rows.append({
+            "dataset": result.dataset, "model": result.model, "arm": result.arm,
+            "split_seed": result.split_seed, "seed": seed,
+            "auroc": metrics["auroc"], "log_loss": metrics["log_loss"],
+            "val_log_loss": float(result.val_log_loss[j]),
+            "in_rashomon_set": bool(keep[j]),
+        })
+    return rows
+
+
 def compare_arms(a: ArmResult, b: ArmResult, cfg) -> list[dict]:
     """Paired differences a - b for ambiguity and mean AUROC, on shared test points."""
     if not np.array_equal(a.row_index, b.row_index):
@@ -201,6 +223,7 @@ def aggregate(datasets: list[str], models: list[str], arms: list[str],
     paths.ensure_dirs(split_seed)
     summaries: list[dict] = []
     comparisons: list[dict] = []
+    seed_rows: list[dict] = []
 
     for dataset in datasets:
         cfg = load(dataset, split_seed=split_seed)
@@ -215,6 +238,7 @@ def aggregate(datasets: list[str], models: list[str], arms: list[str],
                                       "split_seed": split_seed, "error": str(exc)})
                     continue
                 summaries.append(summarise_arm(collected[arm], cfg))
+                seed_rows += seed_summaries(collected[arm], cfg)
 
             for arm_a, arm_b in PRIMARY_PAIRS:
                 if arm_a in collected and arm_b in collected:
@@ -230,6 +254,7 @@ def aggregate(datasets: list[str], models: list[str], arms: list[str],
     out.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(summaries).to_csv(out / "arm_summaries.csv", index=False)
     pd.DataFrame(comparisons).to_csv(out / "comparisons.csv", index=False)
+    pd.DataFrame(seed_rows).to_csv(out / "seed_metrics.csv", index=False)
     (out / "aggregate.json").write_text(
         json.dumps({"split_seed": split_seed, "summaries": summaries,
                     "comparisons": comparisons}, indent=2, default=float)
@@ -237,44 +262,36 @@ def aggregate(datasets: list[str], models: list[str], arms: list[str],
     return {"summaries": summaries, "comparisons": comparisons}
 
 
-def combine(split_seeds: list[int]) -> dict:
-    """Pool the per-split results into a robustness readout (results/across_splits.csv).
-
-    The question this answers is the one the outer loop exists for: does the direction
-    and size of the effect survive re-drawing the partition, or was it an artifact of
-    which rows happened to land in test? It reports, per (dataset, model), the median
-    and range of the ambiguity delta across splits and how many splits cleared zero --
-    it does not pool the intervals into a single test.
-    """
+def _pool(split_seeds: list[int], filename: str) -> pd.DataFrame:
     frames = []
     for split_seed in split_seeds:
-        path = paths.results_dir(split_seed) / "comparisons.csv"
+        path = paths.results_dir(split_seed) / filename
         if path.exists():
             frames.append(pd.read_csv(path))
     if not frames:
         raise FileNotFoundError(
-            "No per-split comparisons.csv found. Run `tfmdm analyze` for each split first."
+            f"No per-split {filename} found. Run `tfmdm analyze` for each split first."
         )
+    return pd.concat(frames, ignore_index=True)
 
-    everything = pd.concat(frames, ignore_index=True)
-    rows = []
-    for (dataset, model, metric), group in everything.groupby(["dataset", "model", "metric"]):
-        cleared = group["delta_ci_high"] < 0.0
-        rows.append({
-            "dataset": dataset, "model": model, "metric": metric,
-            "n_splits": int(len(group)),
-            "delta_median": float(group["delta_point"].median()),
-            "delta_min": float(group["delta_point"].min()),
-            "delta_max": float(group["delta_point"].max()),
-            "relative_change_median": float(group["relative_change"].median()),
-            "splits_ci_below_zero": int(cleared.sum()),
-            "splits_holm_reject": int(group.get("holm_reject", pd.Series(dtype=bool)).sum()),
-            "consistent_direction": bool((group["delta_point"] < 0).all()
-                                         or (group["delta_point"] > 0).all()),
-        })
 
-    frame = pd.DataFrame(rows).sort_values(["metric", "dataset", "model"])
+def combine(split_seeds: list[int]) -> dict:
+    """Pool per-split results into two flat tables under ``results/``.
+
+    ``all_seed_metrics.csv`` is one row per (dataset, model, arm, split_seed, seed) --
+    the raw per-seed test performance, with no aggregation across seeds or splits.
+
+    ``all_arm_summaries.csv`` is one row per (dataset, model, arm, split_seed) -- the
+    metrics already aggregated across seeds *within* a split (ambiguity, discrepancy,
+    AUROC, ...), simply concatenated across splits with no further reduction.
+    """
     paths.RESULTS.mkdir(parents=True, exist_ok=True)
-    frame.to_csv(paths.RESULTS / "across_splits.csv", index=False)
-    everything.to_csv(paths.RESULTS / "all_comparisons.csv", index=False)
-    return {"n_splits": len(frames), "rows": rows}
+
+    seed_metrics = _pool(split_seeds, "seed_metrics.csv")
+    seed_metrics.to_csv(paths.RESULTS / "all_seed_metrics.csv", index=False)
+
+    arm_summaries = _pool(split_seeds, "arm_summaries.csv")
+    arm_summaries.to_csv(paths.RESULTS / "all_arm_summaries.csv", index=False)
+
+    return {"n_splits": len(split_seeds), "n_seed_rows": len(seed_metrics),
+            "n_summary_rows": len(arm_summaries)}

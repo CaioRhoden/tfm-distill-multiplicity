@@ -126,7 +126,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--arms", nargs="+", default=ARMS + ["incontext"])
     _add_split(p)
 
-    p = sub.add_parser("combine", help="Pool per-split results into results/across_splits.csv")
+    p = sub.add_parser("combine",
+                       help="Pool per-split results into results/all_seed_metrics.csv "
+                            "and results/all_arm_summaries.csv")
     _add_split(p, plural=True)
 
     p = sub.add_parser("figures", help="Render F1-F4 for one split")
