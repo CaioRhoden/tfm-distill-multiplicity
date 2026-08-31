@@ -15,7 +15,6 @@ dependencies = [
     "scipy>=1.13",
     "torch>=2.3",
     "interpret>=0.6.3",
-    "wandb>=0.17",
     "omegaconf>=2.3",
     "matplotlib>=3.9",
     "tqdm>=4.66",

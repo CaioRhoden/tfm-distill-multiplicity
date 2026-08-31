@@ -7,7 +7,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from .. import paths, provenance, wandb_logger
+from .. import paths, provenance
 from ..config import load
 from ..data import features as features_mod
 from ..data import load_splits
@@ -78,15 +78,5 @@ def run(dataset: str, split_seed: int, allow_dirty: bool = False) -> dict:
     paths.soft_diagnostics(dataset, split_seed, TEACHER).write_text(
         json.dumps(diagnostics, indent=2, default=float)
     )
-
-    with wandb_logger.run(
-        name=f"softlabels-{dataset}-sp{split_seed}",
-        group=f"{dataset}-softlabels",
-        job_type="softlabels",
-        config={"dataset": dataset, "teacher": TEACHER, "split_seed": split_seed,
-                **provenance.collect()},
-        tags=["phase2", dataset, f"split{split_seed}"],
-    ) as handle:
-        handle.log({k: v for k, v in diagnostics.items() if isinstance(v, (int, float))})
 
     return diagnostics

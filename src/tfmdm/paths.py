@@ -22,7 +22,6 @@ DATA_PROCESSED = ROOT / "data" / "processed"
 
 ARTIFACTS = ROOT / "artifacts"
 RESULTS = ROOT / "results"
-WANDB_DIR = ROOT / "wandb"
 
 
 # --- split-independent ------------------------------------------------------------
@@ -101,7 +100,7 @@ def figures_dir(split_seed: int) -> Path:
 
 
 def ensure_dirs(split_seed: int | None = None) -> None:
-    for path in (DATA_INTERIM, DATA_PROCESSED, ARTIFACTS, RESULTS, WANDB_DIR, TUNED):
+    for path in (DATA_INTERIM, DATA_PROCESSED, ARTIFACTS, RESULTS, TUNED):
         path.mkdir(parents=True, exist_ok=True)
     if split_seed is None:
         return

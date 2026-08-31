@@ -22,7 +22,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from .. import paths, provenance, seeds, wandb_logger
+from .. import paths, provenance, seeds
 from ..config import apply_tuned, load, to_dict
 from ..data import features as features_mod
 from ..data import load_splits
@@ -133,22 +133,6 @@ def _train_one(ctx: GroupContext, dataset: str, model: str, arm: str,
         )
     except NotImplementedError:
         pass
-
-    run_config = {
-        "dataset": dataset, "model": model, "arm": arm, "seed": seed,
-        "split_seed": split_seed, "view": cfg.model.view,
-        "params": to_dict(cfg.model.params), "tuned_from": cfg.model.get("tuned_from"),
-        "bootstrap": bool(cfg.resample.bootstrap),
-        **provenance.collect(paths.processed(dataset)),
-    }
-    with wandb_logger.run(
-        name=f"{dataset}-{model}-{arm}-sp{split_seed}-s{seed}",
-        group=f"{dataset}-{model}-sp{split_seed}",
-        job_type=arm,
-        config=run_config,
-        tags=["phase4", dataset, model, arm, f"split{split_seed}"],
-    ) as handle:
-        handle.log(metrics)
 
     return {"status": "ok", "seed": seed, **metrics}
 

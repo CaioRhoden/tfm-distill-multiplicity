@@ -14,7 +14,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .. import paths, provenance, seeds, wandb_logger
+from .. import paths, provenance, seeds
 from ..config import load
 from ..data import features as features_mod
 from ..data import load_splits
@@ -56,17 +56,6 @@ def run(dataset: str, seed: int, split_seed: int, *, allow_dirty: bool = False,
 
     metrics = {f"test_{k}": v for k, v in performance(y[split.test], p_test).items()}
     metrics["context_rows"] = int(len(ctx_x))
-
-    with wandb_logger.run(
-        name=f"{dataset}-tabicl-incontext-sp{split_seed}-s{seed}",
-        group=f"{dataset}-tabicl-sp{split_seed}",
-        job_type=ARM_NAME,
-        config={"dataset": dataset, "model": MODEL_NAME, "arm": ARM_NAME, "seed": seed,
-                "split_seed": split_seed, "backend": backend.name,
-                **provenance.collect(paths.processed(dataset))},
-        tags=["phase2", dataset, "tabicl", f"split{split_seed}"],
-    ) as handle:
-        handle.log(metrics)
 
     return {"status": "ok", "path": str(out_path), **metrics}
 

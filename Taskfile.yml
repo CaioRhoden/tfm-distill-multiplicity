@@ -1,14 +1,8 @@
 version: '3'
 
-# Every stage of the experiment runs through this file. Nothing in the project is
-# invoked another way, so a run recorded in W&B always corresponds to a target here.
+# Every stage of the experiment runs through this file.
 
 env:
-  # Offline is the default: cluster compute nodes usually have no outbound network,
-  # and an online-only logger either fails the job or blocks it. `task wandb:sync`
-  # pushes the runs afterwards.
-  WANDB_MODE: '{{.WANDB_MODE | default "offline"}}'
-  WANDB_PROJECT: tfm-distill-multiplicity
   PYTHONHASHSEED: '0'
 
 vars:
@@ -186,21 +180,6 @@ tasks:
       - task: analyze
       - task: combine
       - task: figures
-
-  # --- W&B ---------------------------------------------------------------------
-  wandb:sync:
-    desc: Push every offline run to W&B (run this from a node with network access)
-    cmds:
-      - uv run wandb sync --sync-all --include-offline wandb/
-      - echo "Synced. Offline directories are kept; remove them with task wandb:clean."
-
-  wandb:online:
-    desc: Re-run a target with live logging, e.g. task wandb:online -- data
-    cmds: ['WANDB_MODE=online task {{.CLI_ARGS}}']
-
-  wandb:clean:
-    desc: Delete offline run directories that have already been synced
-    cmds: [uv run wandb clean --min-hours 0 --force]
 
   # --- housekeeping ------------------------------------------------------------
   clean:
