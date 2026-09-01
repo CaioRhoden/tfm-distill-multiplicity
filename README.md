@@ -172,7 +172,61 @@ artifacts/split{K}/
   splits/      views/      softlabels/      preds/
 results/split{K}/  arm_summaries.csv  comparisons.csv  figures/
 results/across_splits.csv          the cross-replicate robustness readout
+results/all_arm_summaries.csv       every split's arm_summaries.csv, stacked
+results/all_seed_metrics.csv       every split's seed_metrics.csv, stacked
 ```
+
+## The compiled tables
+
+`task compile` stacks the per-split result files into two long tables at the top of
+`results/`, so a whole run can be read without walking `split{K}/` by hand. Nothing is
+recomputed or re-aggregated: each row is a row of a per-split file, and `(dataset, model,
+arm, split_seed)` identifies it. Both are appended in split order, so a rerun of one
+replicate is picked up by rerunning `task compile`.
+
+### `results/all_arm_summaries.csv`
+
+One row per **arm** — a (dataset, model, arm) cell within one split replicate, summarising
+its 30 run seeds. 50 rows: 2 datasets x 5 arms x 5 splits.
+
+| Column | Meaning |
+| --- | --- |
+| `dataset` | `adult` or `taiwan` |
+| `model` | `ebm`, `nam`, or `tabicl` |
+| `arm` | `hard` (trained on the ground-truth labels), `distilled` (trained on TabICLv2 soft labels), or `incontext` (the TabICLv2 predictions themselves) |
+| `split_seed` | which 60/20/20 split replicate (0-4) the cell belongs to |
+| `n_seeds` | run seeds trained in the cell (30) |
+| `n_test` | test rows the multiplicity metrics are measured over |
+| `ambiguity` | fraction of test points on which at least two of the models disagree on the predicted class |
+| `discrepancy` | fraction of test points on which some model disagrees with the reference model — the worst single-model deviation |
+| `max_pairwise_discrepancy` | largest disagreement rate over all model *pairs*, not just against the reference |
+| `n_models`, `n_points` | the model set and test-point count the metrics above were computed on (mirrors `n_seeds` / `n_test`) |
+| `reference_index` | index of the model used as the reference for `discrepancy` (0 = the first run seed) |
+| `ambiguity_point`, `ambiguity_ci_low`, `ambiguity_ci_high`, `ambiguity_ci_method` | bootstrap estimate and interval for ambiguity; `bca` = bias-corrected accelerated |
+| `discrepancy_point`, `discrepancy_ci_low`, `discrepancy_ci_high`, `discrepancy_ci_method` | the same for discrepancy |
+| `mean_auroc_point`, `mean_auroc_ci_low`, `mean_auroc_ci_high`, `mean_auroc_ci_method` | bootstrap estimate and interval for the mean test AUROC across the seeds (`percentile`) |
+| `auroc_mean`, `auroc_std` | mean and standard deviation of test AUROC over the run seeds — the spread is the seed-to-seed instability |
+| `log_loss_mean`, `log_loss_std` | the same for test log loss |
+| `rashomon_n_models` | how many of the seeds fall inside the Rashomon set (near-optimal on validation loss); empty when no set could be formed |
+| `rashomon_ambiguity`, `rashomon_discrepancy` | ambiguity and discrepancy recomputed over the Rashomon subset only — multiplicity among models a practitioner could not tell apart |
+
+Reading it: `ambiguity` for `hard` versus `distilled` in the same (dataset, model, split)
+row pair is the headline contrast; the CI columns say whether that gap survives resampling,
+and the `rashomon_*` columns say whether it survives restricting to near-optimal models.
+
+### `results/all_seed_metrics.csv`
+
+One row per **trained model** — the per-seed detail behind every arm summary. 1,500 rows:
+50 arms x 30 run seeds.
+
+| Column | Meaning |
+| --- | --- |
+| `dataset`, `model`, `arm`, `split_seed` | the arm this model belongs to; joins to `all_arm_summaries.csv` on these four columns |
+| `seed` | the run seed (0-29) — the only thing varied within an arm |
+| `auroc` | test AUROC of this single model |
+| `log_loss` | test log loss of this single model |
+| `val_log_loss` | validation log loss — the selection metric, and what the Rashomon threshold is applied to |
+| `in_rashomon_set` | `True` if this model's `val_log_loss` is within the Rashomon tolerance of the best seed in its arm; the `True` count per arm equals `rashomon_n_models` above |
 
 ## Tests
 
