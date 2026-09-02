@@ -126,6 +126,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--arms", nargs="+", default=ARMS + ["incontext"])
     _add_split(p)
 
+    p = sub.add_parser("explanations",
+                       help="Phase 5.4: explanation multiplicity over the fitted model sets")
+    p.add_argument("--datasets", nargs="+", default=DATASETS)
+    p.add_argument("--models", nargs="+", default=INTERPRETABLE)
+    p.add_argument("--arms", nargs="+", default=ARMS)
+    p.add_argument("--max-rows", type=int, default=None,
+                   help="Explain a random subsample of this many test rows (default: all)")
+    _add_split(p)
+
+    p = sub.add_parser("compile-explanations",
+                       help="Pool explanation multiplicity and join it to AUROC")
+    _add_split(p, plural=True)
+
     p = sub.add_parser("combine",
                        help="Pool per-split results into results/all_seed_metrics.csv "
                             "and results/all_arm_summaries.csv")
@@ -246,6 +259,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                            _resolve_split(args.split_seed))
         _emit({"n_summaries": len(result["summaries"]),
                "n_comparisons": len(result["comparisons"])})
+
+    elif command == "explanations":
+        from .analysis import explanations
+
+        _emit(explanations.run(args.datasets, args.models, args.arms,
+                               _resolve_split(args.split_seed), args.max_rows))
+
+    elif command == "compile-explanations":
+        from .analysis import explanations
+
+        _emit(explanations.combine(_resolve_splits(args.split_seeds)))
 
     elif command == "combine":
         from .analysis import combine

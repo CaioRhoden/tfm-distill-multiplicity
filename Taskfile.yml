@@ -156,6 +156,18 @@ tasks:
           {{.RUN}} analyze --datasets {{.DATASETS}} --split-seed $k
         done
 
+  explanations:
+    desc: 'Phase 5.4: explanation multiplicity over the fitted model sets, per split'
+    cmds:
+      - |
+        for k in {{.SPLIT_SEEDS}}; do
+          {{.RUN}} explanations --datasets {{.DATASETS}} --models {{.MODELS}} --split-seed $k
+        done
+
+  explanations:compile:
+    desc: 'Pool explanation multiplicity and join it to AUROC -> results/explanation_metrics.csv'
+    cmds: ['{{.RUN}} compile-explanations --split-seeds {{.SPLIT_SEEDS}}']
+
   combine:
     desc: 'Pool the per-split results into results/across_splits.csv (robustness readout)'
     cmds: ['{{.RUN}} combine --split-seeds {{.SPLIT_SEEDS}}']
@@ -178,7 +190,9 @@ tasks:
       - task: tune
       - task: sweep
       - task: analyze
+      - task: explanations
       - task: combine
+      - task: explanations:compile
       - task: figures
 
   # --- housekeeping ------------------------------------------------------------

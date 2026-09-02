@@ -57,7 +57,9 @@ task tabicl:preds      # Phase 2.4: the 30-model TabICLv2 set (baseline B3)
 task tune              # Phase 4.2: one random search per (dataset, model, arm, split)
 task slurm             # Phase 4.1: submit the sweep as an idempotent SLURM array
 task analyze           # Phase 5: multiplicity, bootstrap intervals, Holm-corrected tests
+task explanations      # Phase 5.4: explanation multiplicity over the fitted model sets
 task combine           # Pool the replicates into results/across_splits.csv
+task explanations:compile  # results/explanation_metrics.csv (explanation metrics + AUROC)
 task figures           # F1-F4 into results/split{K}/figures/
 ```
 
@@ -121,6 +123,15 @@ Everything split-dependent lives under `artifacts/split{K}/` and `results/split{
 - writes `comparisons.csv` — hard-vs-distilled and interpretable-vs-TabICLv2 deltas, Holm-corrected p-values, and the H1/H2 decision flags.
 - writes `aggregate.json` — the same content as one file, for programmatic reuse.
 
+**`explanations`** — Phase 5.4, how differently the 30 models of a cell *explain* the same test set. Reuses the fitted `.joblib` artifacts; nothing is retrained.
+- reads `artifacts/split{K}/models/*` and the frozen split, so every model is explained on the same test rows.
+- writes `results/split{K}/explanation_multiplicity.csv` + `.json` — one row per (dataset, model, arm) cell.
+
+**`explanations:compile`** — pools those files and joins them to the accuracy they were bought at.
+- reads `results/split{K}/explanation_multiplicity.csv` and `arm_summaries.csv` for every split in `SPLIT_SEEDS`.
+- writes `results/all_explanation_multiplicity.csv` — the per-split files stacked, nothing dropped.
+- writes `results/explanation_metrics.csv` — the compiled table: explanation metrics beside AUROC and predictive multiplicity.
+
 **`combine`** — pools replicates into the robustness readout: does the effect survive re-drawing the partition, or was it an artifact of one split?
 - reads `results/split{K}/comparisons.csv` for every split in `SPLIT_SEEDS`.
 - writes `results/across_splits.csv` — median/min/max delta and how many splits' intervals clear zero, per (dataset, model, metric).
@@ -157,7 +168,8 @@ src/tfmdm/
   data/          loaders, cleaning, the frozen split, the raw and encoded feature views
   softlabels/    the TabICLv2 adapter and the cross-fitting machinery
   models/        EBM, NAM (PyTorch port), logistic regression, behind one interface
-  metrics/       performance, multiplicity (ambiguity/discrepancy), bootstrap + Holm
+  metrics/       performance, multiplicity (ambiguity/discrepancy), explanation
+                 multiplicity (Spearman/FED/LAD/Jaccard), bootstrap + Holm
   stages/        one module per pipeline phase; each is a Taskfile target and a SLURM job
   analysis/      aggregation and figures F1-F4
 tests/           metric identities, preprocessing correctness, cross-fitting, the grid
@@ -170,8 +182,9 @@ Artifacts:
 data/processed/{ds}.parquet        cleaned frame — shared, produced before any split exists
 artifacts/split{K}/
   splits/      views/      softlabels/      preds/
-results/split{K}/  arm_summaries.csv  comparisons.csv  figures/
+results/split{K}/  arm_summaries.csv  comparisons.csv  explanation_multiplicity.csv  figures/
 results/across_splits.csv          the cross-replicate robustness readout
+results/explanation_metrics.csv    explanation multiplicity joined to AUROC
 results/all_arm_summaries.csv       every split's arm_summaries.csv, stacked
 results/all_seed_metrics.csv       every split's seed_metrics.csv, stacked
 ```
@@ -228,14 +241,68 @@ One row per **trained model** — the per-seed detail behind every arm summary. 
 | `val_log_loss` | validation log loss — the selection metric, and what the Rashomon threshold is applied to |
 | `in_rashomon_set` | `True` if this model's `val_log_loss` is within the Rashomon tolerance of the best seed in its arm; the `True` count per arm equals `rashomon_n_models` above |
 
+## Explanation multiplicity
+
+`task analyze` asks whether equally-accurate models *decide* differently. `task
+explanations` asks whether they *explain* differently — the failure mode that matters
+when an additive model is deployed **because** it is interpretable. Four pairwise
+metrics, averaged over the 435 pairs a 30-model set has, in
+[src/tfmdm/metrics/explanation.py](src/tfmdm/metrics/explanation.py).
+
+| Metric | Column | Direction |
+| --- | --- | --- |
+| Global — Spearman correlation of the term-importance ranking | `mean_spearman_correlation` | **high is stable** |
+| Functional — normalised discrepancy between shape functions (FED), also split by term order | `mean_normalized_fed`, `mean_fed_order1`, `mean_fed_order2` | low is stable |
+| Local — mean absolute gap between per-row attributions (LAD), in logits | `mean_local_attribution_discrepancy` | low is stable |
+| Agreement — Jaccard overlap of a row's top-k attributed terms | `mean_jaccard_top3`, `mean_jaccard_top5` | **high is stable** |
+| Term selection — Jaccard overlap of the *term sets* themselves | `mean_term_set_jaccard` | **high is stable** |
+
+Explanation sparsity (metric 5 in issue #2) is deliberately not implemented yet.
+
+Three decisions the numbers depend on:
+
+**Contributions are evaluated on the shared test set, not read out of the model.** An
+EBM stores its shape functions as per-bin score vectors whose length depends on the
+bins that seed's bootstrap produced — two seeds' vectors are frequently not even the
+same shape — and a NAM has no tabular representation at all. Evaluating every model on
+the same rows makes the two families measurable with one implementation, via
+`models/explain.py`.
+
+**Models are aligned by term name over the union of the cell's terms, and a term a
+model does not have contributes zero.** This matters more than it sounds: EBM picks
+its interaction terms per seed, and in `adult`/`hard`/split0 the 30 seeds carry 68
+distinct terms between them while averaging 35 each — one seed selected no
+interactions at all. Intersecting the term sets would hide exactly the disagreement
+being measured, so `mean_term_set_jaccard` reports how much of it is term *selection*
+rather than term *shape*.
+
+**Contributions are centred per term before comparison.** A constant offset shared by
+every row is absorbed by the intercept and explains nothing; leaving it in would
+report the intercept's arbitrary split between terms as disagreement. This is a no-op
+for EBM, whose term scores are already centred, and it binds for NAM.
+
+`mean_term_set_jaccard` is an addition to the issue's metric set, and the last two
+decisions above are departures from the reference implementation in it.
+
+### `results/explanation_metrics.csv`
+
+The compiled table, one row per (dataset, model, arm, split_seed) — 40 rows: 2
+datasets x 2 models x 2 arms x 5 splits. The explanation metrics above, plus
+`n_terms_union` / `n_interaction_terms_union` / `mean_n_terms` for context, plus the
+accuracy and predictive multiplicity of the same model set (`auroc_mean`, `auroc_std`,
+`mean_auroc_point` and its interval, `ambiguity`, `discrepancy`) joined from
+`arm_summaries.csv`. As with F1, a multiplicity number is never read without the AUROC
+beside it: a model set of identical constant predictors would score perfectly on every
+column on the left.
+
 ## Tests
 
 ```bash
 task test
 ```
 
-They cover the parts where being wrong is silent: the multiplicity metrics against
-known-answer cases, the equivalence behind the weighted-duplication distillation trick, the
+They cover the parts where being wrong is silent: the predictive and explanation
+multiplicity metrics against known-answer cases, the equivalence behind the weighted-duplication distillation trick, the
 split and encoder behaviour, and that cross-fitting defeats a memorising teacher.
 
 ## Data
