@@ -548,23 +548,82 @@ def run(datasets: list[str], models: list[str], arms: list[str], split_seed: int
 
     out = paths.results_dir(split_seed)
     out.mkdir(parents=True, exist_ok=True)
-    frames = {
-        "explanation_multiplicity.csv": cells,
-        "explanation_summaries.csv": summaries,
-        "explanation_margin_sweep.csv": sweeps,
-        "explanation_comparisons.csv": comparisons,
+
+    # Written by merge, not by overwrite: a run restricted to one family (``--models
+    # nam``) must not delete the other family's rows. The cost of getting this wrong is
+    # silent -- the table still looks well-formed, it is just missing half the study.
+    merged = {
+        "explanation_multiplicity.csv": _merge_into(out / "explanation_multiplicity.csv",
+                                                    cells, CELL_KEYS),
+        "explanation_summaries.csv": _merge_into(out / "explanation_summaries.csv",
+                                                 summaries, CELL_KEYS),
+        "explanation_margin_sweep.csv": _merge_into(out / "explanation_margin_sweep.csv",
+                                                    sweeps, CELL_KEYS),
+        "explanation_comparisons.csv": _merge_into(out / "explanation_comparisons.csv",
+                                                   comparisons, COMPARISON_KEYS),
     }
-    for name, rows in frames.items():
-        pd.DataFrame(rows).to_csv(out / name, index=False)
-        progress.log(f"wrote {out / name} ({len(rows)} rows)")
-    (out / "explanation_multiplicity.json").write_text(
-        json.dumps({"split_seed": split_seed, "cells": cells,
-                    "comparisons": comparisons}, indent=2, default=float)
-    )
+    for name, frame in merged.items():
+        frame.to_csv(out / name, index=False)
+        progress.log(f"wrote {out / name} ({len(frame)} rows)")
+
+    (out / "explanation_multiplicity.json").write_text(json.dumps(
+        {"split_seed": split_seed,
+         "cells": merged["explanation_multiplicity.csv"].to_dict(orient="records"),
+         "comparisons": merged["explanation_comparisons.csv"].to_dict(orient="records")},
+        indent=2, default=float,
+    ))
 
     return {"split_seed": split_seed, "n_cells": len(cells),
             "n_errors": int(sum("error" in c for c in cells)),
             "n_summaries": len(summaries), "n_comparisons": len(comparisons)}
+
+
+# What identifies a row for the purpose of replacing it. A cell table is keyed by the
+# cell; the comparisons table has no ``arm`` column (it spans arms via arm_a/arm_b), so
+# recomputing a family replaces all of that family's comparisons.
+CELL_KEYS = ("dataset", "model", "arm", "split_seed")
+COMPARISON_KEYS = ("dataset", "model", "split_seed")
+
+
+def _merge_into(path, rows: list[dict], keys: tuple[str, ...]) -> pd.DataFrame:
+    """Combine freshly computed rows with the ones already on disk.
+
+    Rows whose key this run recomputed are replaced; every other row is kept, so
+    ``--models nam`` today and ``--models ebm`` tomorrow build one complete table
+    instead of each erasing the other.
+
+    A file written by an *older* metric set is discarded rather than merged. Those rows
+    cannot be aligned with these -- they were produced by different definitions -- and
+    concatenating them would fill the new columns with NaN for half the table, which
+    reads as "this cell has no attribution ambiguity" rather than as "this cell is
+    stale". Losing them is safe: they have to be recomputed either way.
+    """
+    new = pd.DataFrame(rows)
+    if new.empty or not path.exists():
+        return new
+
+    old = pd.read_csv(path)
+    if old.empty:
+        return new
+
+    absent = sorted(set(new.columns) - set(old.columns))
+    if absent:
+        progress.log(
+            f"{path.name}: discarding {len(old)} row(s) written by an older metric set "
+            f"(missing {absent[:3]}{'...' if len(absent) > 3 else ''}); rerun the other "
+            "cells to restore them"
+        )
+        return new
+
+    keys = [k for k in keys if k in new.columns and k in old.columns]
+    if not keys:
+        return new
+
+    recomputed = set(map(tuple, new[keys].astype(str).itertuples(index=False, name=None)))
+    kept = old[~old[keys].astype(str).apply(tuple, axis=1).isin(recomputed)]
+    if len(kept):
+        progress.log(f"{path.name}: keeping {len(kept)} row(s) from earlier runs")
+    return pd.concat([kept, new], ignore_index=True).sort_values(keys).reset_index(drop=True)
 
 
 def _holm_within(comparisons: list[dict], hypothesis: str, predicate) -> None:
