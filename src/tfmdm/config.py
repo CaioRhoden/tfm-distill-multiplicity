@@ -14,6 +14,17 @@ ARMS = ("hard", "distilled")
 # Arms whose targets are soft probabilities rather than 0/1 labels.
 SOFT_ARMS = ("distilled",)
 
+# Control arms. Not part of any hypothesis -- they exist to put a known answer at each
+# end of a metric's range, so a number in the middle can be read. ``shuffled`` trains
+# on permuted labels, which leaves the model set nothing to agree about and should
+# therefore saturate explanation multiplicity (plan gate 2.2).
+CONTROL_ARMS = ("shuffled",)
+
+# Arms whose targets are 0/1 labels, and which therefore select on validation AUROC.
+HARD_ARMS = ("hard",) + CONTROL_ARMS
+
+ALL_ARMS = ARMS + CONTROL_ARMS
+
 
 def load(dataset: str, model: str | None = None, split_seed: int | None = None) -> DictConfig:
     """Compose the config for one (dataset, model, split) combination.

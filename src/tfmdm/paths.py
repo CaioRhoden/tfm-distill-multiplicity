@@ -109,3 +109,8 @@ def ensure_dirs(split_seed: int | None = None) -> None:
         (root / name).mkdir(parents=True, exist_ok=True)
     figures_dir(split_seed).mkdir(parents=True, exist_ok=True)
     (TUNED / f"split{split_seed}").mkdir(parents=True, exist_ok=True)
+
+
+def term_groups(dataset: str, view: str, split_seed: int) -> Path:
+    """Map from a model's raw term names to the units explanations are read at (D4)."""
+    return split_root(split_seed) / "views" / f"{dataset}_{view}_groups.json"

@@ -50,13 +50,36 @@ def build_targets(dataset: str, arm: str, split_seed: int, split, y):
     """Return (train target, val target) for the arm.
 
     Hard labels stay 0/1; the distilled arm replaces them entirely -- decision D6 keeps
-    the two from being mixed.
+    the two from being mixed. The shuffled control permutes them, which is the same
+    learning problem with the signal removed.
     """
     if arm == "hard":
         return y[split.train].astype(float), y[split.val].astype(float)
     if arm == "distilled":
         return _soft_targets(dataset, split_seed, split)
+    if arm == "shuffled":
+        return _shuffled_targets(split_seed, split, y)
     raise ValueError(f"Unknown arm {arm!r}")
+
+
+def _shuffled_targets(split_seed: int, split, y) -> tuple[np.ndarray, np.ndarray]:
+    """Permuted labels -- the saturation control of plan gate 2.2.
+
+    Train and validation are permuted *within* their own partitions, so the class
+    balance and the split structure are untouched and the only thing destroyed is the
+    association between a row and its label. A model set fitted on this has nothing to
+    agree about, so its explanation multiplicity is the top of the metric's range: the
+    number a real cell has to be read against.
+
+    The permutation is keyed to the split seed alone, not to the run seed. Every one of
+    the 30 models therefore sees the *same* shuffled labels, exactly as they all see the
+    same real labels in the other arms -- otherwise the control would be measuring
+    disagreement between 30 different learning problems rather than multiplicity within
+    one.
+    """
+    rng = np.random.default_rng(90000 + int(split_seed))
+    return (rng.permutation(y[split.train]).astype(float),
+            rng.permutation(y[split.val]).astype(float))
 
 
 @dataclass

@@ -11,6 +11,8 @@ from typing import Sequence
 DATASETS = ["adult", "taiwan"]
 INTERPRETABLE = ["ebm", "nam"]
 ARMS = ["hard", "distilled"]
+CONTROL_ARMS = ["shuffled"]
+ALL_ARMS = ARMS + CONTROL_ARMS
 
 
 def _allow_dirty() -> bool:
@@ -82,14 +84,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("tune", help="Phase 4.2: one random search per (dataset, model, arm, split)")
     p.add_argument("--dataset", required=True, choices=DATASETS)
     p.add_argument("--model", required=True, choices=INTERPRETABLE + ["logreg"])
-    p.add_argument("--arm", required=True, choices=ARMS)
+    p.add_argument("--arm", required=True, choices=ALL_ARMS)
     p.add_argument("--n-configs", type=int, default=None)
     _add_split(p)
 
     p = sub.add_parser("train", help="Phase 4.1: one cell (single seed), for debugging")
     p.add_argument("--dataset", required=True, choices=DATASETS)
     p.add_argument("--model", required=True, choices=INTERPRETABLE + ["logreg"])
-    p.add_argument("--arm", required=True, choices=ARMS)
+    p.add_argument("--arm", required=True, choices=ALL_ARMS)
     p.add_argument("--seed", type=int, required=True)
     p.add_argument("--overwrite", action="store_true")
     _add_split(p)
@@ -98,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Phase 4.1: every run seed of one (dataset, model, arm, split)")
     p.add_argument("--dataset", required=True, choices=DATASETS)
     p.add_argument("--model", required=True, choices=INTERPRETABLE + ["logreg"])
-    p.add_argument("--arm", required=True, choices=ARMS)
+    p.add_argument("--arm", required=True, choices=ALL_ARMS)
     p.add_argument("--seeds", nargs="+", type=int, default=None,
                    help="Run seeds (default: all of model_seeds)")
     p.add_argument("--overwrite", action="store_true")
@@ -126,13 +128,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--arms", nargs="+", default=ARMS + ["incontext"])
     _add_split(p)
 
+    p = sub.add_parser("explain-probe",
+                       help="Phase 1.1: check that saved models' term contributions "
+                            "reproduce their own logits")
+    p.add_argument("--datasets", nargs="+", default=DATASETS)
+    p.add_argument("--models", nargs="+", default=INTERPRETABLE)
+    p.add_argument("--arms", nargs="+", default=ARMS)
+    p.add_argument("--seed", type=int, default=0, help="Run seed to probe (default: 0)")
+    _add_split(p)
+
     p = sub.add_parser("explanations",
                        help="Phase 5.4: explanation multiplicity over the fitted model sets")
     p.add_argument("--datasets", nargs="+", default=DATASETS)
     p.add_argument("--models", nargs="+", default=INTERPRETABLE)
-    p.add_argument("--arms", nargs="+", default=ARMS)
+    p.add_argument("--arms", nargs="+", default=ALL_ARMS)
     p.add_argument("--max-rows", type=int, default=None,
                    help="Explain a random subsample of this many test rows (default: all)")
+    p.add_argument("--no-shapes", action="store_true",
+                   help="Skip the shape-function distance, which is the slow part")
     _add_split(p)
 
     p = sub.add_parser("compile-explanations",
@@ -144,7 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "and results/all_arm_summaries.csv")
     _add_split(p, plural=True)
 
-    p = sub.add_parser("figures", help="Render F1-F4 for one split")
+    p = sub.add_parser("figures", help="Render F1-F5 and F8 for one split")
     p.add_argument("--datasets", nargs="+", default=DATASETS)
     p.add_argument("--models", nargs="+", default=INTERPRETABLE)
     _add_split(p)
@@ -260,11 +273,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         _emit({"n_summaries": len(result["summaries"]),
                "n_comparisons": len(result["comparisons"])})
 
+    elif command == "explain-probe":
+        from .analysis import probe
+
+        report = probe.run(args.datasets, args.models, args.arms,
+                           _resolve_split(args.split_seed), args.seed)
+        _emit(report)
+        return 0 if report["all_passed"] else 1
+
     elif command == "explanations":
         from .analysis import explanations
 
         _emit(explanations.run(args.datasets, args.models, args.arms,
-                               _resolve_split(args.split_seed), args.max_rows))
+                               _resolve_split(args.split_seed), args.max_rows,
+                               with_shapes=not args.no_shapes))
 
     elif command == "compile-explanations":
         from .analysis import explanations

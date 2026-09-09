@@ -1,4 +1,4 @@
-"""Figures F1-F4 from the plan.
+"""Figures F1-F5 and F8 from the plan.
 
 One rule runs through all of them: multiplicity never appears without the accuracy it
 was traded against. F1 is the headline for exactly that reason -- it is the only view
@@ -7,24 +7,30 @@ in which "we reduced ambiguity" and "we did not pay for it" can be read at once.
 
 from __future__ import annotations
 
-import itertools
 import json
 
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-from scipy.stats import spearmanr  # noqa: E402
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 
-from .. import paths  # noqa: E402
-from ..config import load  # noqa: E402
-from ..metrics import multiplicity as mult  # noqa: E402
-from .aggregate import collect_arm  # noqa: E402
+from .. import paths
+from ..config import load
+from ..metrics import explanation as expl
+from ..metrics import multiplicity as mult
+from . import grouping
+from .aggregate import collect_arm
 
-ARM_COLOR = {"hard": "#4C72B0", "distilled": "#DD8452", "tabicl": "#8172B3"}
-ARM_LABEL = {"hard": "Hard labels", "distilled": "Distilled (TabICLv2)", "tabicl": "TabICLv2"}
+TOP_K = (3, 5)
+# Arms F4 looks for on disk; the control is included so it can be read as the ceiling.
+STABILITY_ARMS = ("hard", "distilled", "shuffled")
+
+ARM_COLOR = {"hard": "#4C72B0", "distilled": "#DD8452", "tabicl": "#8172B3",
+             "shuffled": "#937860"}
+ARM_LABEL = {"hard": "Hard labels", "distilled": "Distilled (TabICLv2)", "tabicl": "TabICLv2",
+             "shuffled": "Shuffled labels (control)"}
 MARKER = {"ebm": "o", "nam": "s", "logreg": "^", "tabicl": "D"}
 
 
@@ -129,50 +135,174 @@ def _importance_vectors(dataset: str, model: str, arm: str, split_seed: int,
 
 
 def f4_explanation_stability(datasets: list[str], models: list[str], split_seed: int) -> str:
-    """Do the explanations stabilise, not just the predictions?
+    """Do the explanations stabilise, not just the predictions? (plan 3.2)
 
-    This is the figure that speaks to the 'natively provides explanations' half of the
-    thesis: a model set can agree on decisions while disagreeing on why.
+    Measured as the mean pairwise Jaccard of the top-k globally most important terms,
+    not as a Spearman correlation over the full importance vector. Spearman ranks every
+    term, which over the NAM's ~80 near-zero one-hot columns and the EBM's block of
+    exactly-zero unselected pair terms is dominated by the arbitrary ordering of ties --
+    two near-identical models can score near zero for no reason a reader would accept.
+    A top-k set ignores the tied tail and asks only whether the terms someone would
+    actually look at are the same ones.
+
+    NAM importances are grouped to parent features first (D4). The on-disk vectors are
+    per one-hot column, which is neither the granularity a NAM is read at nor the one
+    the rest of the analysis uses.
     """
     records = []
     for dataset in datasets:
         cfg = load(dataset, split_seed=split_seed)
         seed_list = [int(s) for s in cfg.model_seeds]
         for model in models:
-            for arm in ("hard", "distilled"):
+            for arm in STABILITY_ARMS:
                 vectors = _importance_vectors(dataset, model, arm, split_seed, seed_list)
                 if len(vectors) < 2:
                     continue
                 keys = sorted(set.intersection(*(set(v) for v in vectors)))
                 matrix = np.array([[v[k] for k in keys] for v in vectors])
-                for a, b in itertools.combinations(range(len(vectors)), 2):
-                    rho = spearmanr(matrix[a], matrix[b]).statistic
-                    records.append({"dataset": dataset, "model": model, "arm": arm,
-                                    "spearman": float(rho)})
+                matrix, groups = _group_importances(dataset, model, split_seed, matrix, keys)
+
+                row = {"dataset": dataset, "model": model, "arm": arm,
+                       "split_seed": split_seed, "n_models": len(vectors),
+                       "n_groups": len(groups)}
+                for k in TOP_K:
+                    row.update(expl.top_k_jaccard(matrix, k))
+                records.append(row)
 
     frame = pd.DataFrame(records)
-    fig, ax = plt.subplots(figsize=(max(6, 1.4 * max(len(frame.groupby(['dataset','model','arm'])), 1)), 4.5))
+    fig, ax = plt.subplots(figsize=(max(6, 1.2 * max(len(frame), 1)), 4.5))
     if frame.empty:
         ax.text(0.5, 0.5, "No importance files found", ha="center", va="center")
     else:
-        groups = list(frame.groupby(["dataset", "model", "arm"]))
-        ax.boxplot([g["spearman"].to_numpy() for _, g in groups], showfliers=False)
-        ax.set_xticks(range(1, len(groups) + 1),
-                      [f"{d}\n{m}·{a}" for (d, m, a), _ in groups], fontsize=7)
-        ax.set_ylabel("Spearman ρ between seed pairs")
+        frame.to_csv(paths.results_dir(split_seed) / "explanation_stability.csv", index=False)
+        positions = np.arange(len(frame))
+        for offset, k in zip((-0.2, 0.2), TOP_K):
+            ax.bar(positions + offset, frame[f"mean_top{k}_jaccard"], width=0.4,
+                   label=f"top-{k}", alpha=0.85 if offset < 0 else 0.55,
+                   color=[ARM_COLOR.get(a, "#888") for a in frame["arm"]])
+        ax.set_xticks(positions,
+                      [f"{r.dataset}\n{r.model}·{r.arm}" for r in frame.itertuples()],
+                      fontsize=7)
+        ax.set_ylim(0, 1.02)
+        ax.set_ylabel("Mean pairwise top-k Jaccard (1 = identical)")
         ax.grid(axis="y", alpha=0.3)
-        frame.to_csv(paths.results_dir(split_seed) / "explanation_stability.csv",
-                     index=False)
-    ax.set_title("F4 — stability of global feature importances across seeds")
+        ax.legend(fontsize=8)
+    ax.set_title("F4 — stability of the globally most important terms across seeds")
     return _save(fig, "F4_explanation_stability", split_seed)
 
 
+def _group_importances(dataset: str, model: str, split_seed: int,
+                       matrix: np.ndarray, keys: list[str]) -> tuple[np.ndarray, list[str]]:
+    """Sum a (n_models, n_terms) importance matrix onto the D4 units.
+
+    Importance is a mean of *absolute* contributions, so summing a parent's levels is
+    an upper bound on the parent's own mean-absolute contribution rather than equal to
+    it. That is the right reduction here anyway: this figure ranks features against
+    each other, and a feature's claim on a reader's attention is the total magnitude it
+    moves the logit by, spread across its levels or not.
+    """
+    mapping = grouping.group_map(dataset, model, split_seed, keys)
+    grouped, groups = expl.group_terms(matrix[:, None, :], keys, mapping)
+    return grouped[:, 0, :], groups
+
+
+def f5_explanation_against_prediction(split_seed: int) -> str:
+    """E1 — is a model set less settled about *why* than about *what*? (plan hypothesis E1)
+
+    Each point is one cell. The diagonal is the claim being tested: a point above it
+    means the seeds re-attribute more rows than they re-decide, i.e. they agree on the
+    decision while disagreeing on the reason. Predictive ambiguity is the floor the
+    explanation metric has to clear, which is why the two share an axis rather than
+    appearing in separate panels.
+    """
+    results = paths.results_dir(split_seed)
+    explanations = pd.read_csv(results / "explanation_multiplicity.csv")
+    summaries = pd.read_csv(results / "arm_summaries.csv")
+    keys = ["dataset", "model", "arm", "split_seed"]
+    merged = explanations.merge(summaries[keys + ["ambiguity"]], on=keys, how="inner")
+
+    fig, ax = plt.subplots(figsize=(5.5, 5.5))
+    merged = merged.dropna(subset=["ambiguity", "attribution_ambiguity"])
+    if merged.empty:
+        ax.text(0.5, 0.5, "No paired cells found", ha="center", va="center")
+    else:
+        for row in merged.itertuples():
+            ax.scatter(row.ambiguity, row.attribution_ambiguity, s=90,
+                       marker=MARKER.get(row.model, "o"),
+                       color=ARM_COLOR.get(row.arm, "#888"),
+                       label=f"{row.model.upper()} · {ARM_LABEL.get(row.arm, row.arm)}")
+            ax.annotate(row.dataset, (row.ambiguity, row.attribution_ambiguity),
+                        fontsize=7, xytext=(4, -8), textcoords="offset points")
+        limit = max(1e-3, float(merged[["ambiguity", "attribution_ambiguity"]].max().max()) * 1.15)
+        ax.plot([0, limit], [0, limit], ls="--", color="grey", lw=1)
+        ax.set_xlim(0, limit)
+        ax.set_ylim(0, limit)
+        handles, labels = ax.get_legend_handles_labels()
+        unique = dict(zip(labels, handles))
+        ax.legend(unique.values(), unique.keys(), fontsize=7, loc="upper left")
+    ax.set_xlabel("Predictive ambiguity (disagree on the decision)")
+    ax.set_ylabel("Attribution ambiguity (disagree on the top-1 reason)")
+    ax.grid(alpha=0.3)
+    ax.set_title(f"F5 — explanations against decisions (split {split_seed})")
+    return _save(fig, "F5_explanation_vs_prediction", split_seed)
+
+
+def f8_margin_sweep(split_seed: int) -> str:
+    """3.4/D2 — does the arm difference survive away from the near-tie rows?
+
+    Left: how much attribution margin the reference model actually has, as the share of
+    rows surviving each epsilon. If the distilled arm's curve falls away faster, its
+    importance profile is flatter, and *that alone* raises any rank metric without any
+    increase in genuine disagreement.
+
+    Right: ambiguity recomputed over only the surviving rows. If the gap between the
+    arms closes as epsilon grows, the effect lived in the near-ties and is not a
+    statement about explanations -- which is the E2 caveat in the plan's decision rule.
+    """
+    path = paths.results_dir(split_seed) / "explanation_margin_sweep.csv"
+    sweep = pd.read_csv(path) if path.exists() else pd.DataFrame()
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
+    if sweep.empty:
+        for ax in axes:
+            ax.text(0.5, 0.5, "No margin sweep found", ha="center", va="center")
+    else:
+        for (dataset, model, arm), group in sweep.groupby(["dataset", "model", "arm"]):
+            group = group.sort_values("epsilon")
+            style = {"color": ARM_COLOR.get(arm, "#888"),
+                     "ls": "-" if model == "ebm" else "--",
+                     "marker": MARKER.get(model, "o"), "ms": 4,
+                     "label": f"{dataset}·{model.upper()}·{arm}"}
+            axes[0].plot(group["epsilon"], group["share_kept"], **style)
+            axes[1].plot(group["epsilon"], group["ambiguity"], **style)
+        axes[0].set_ylabel("Share of rows with margin > ε")
+        axes[1].set_ylabel("Attribution ambiguity on surviving rows")
+        for ax in axes:
+            ax.set_xlabel("ε (top-1 minus top-2 attribution, logits)")
+            ax.set_xscale("symlog", linthresh=1e-3)
+            ax.grid(alpha=0.3)
+        axes[1].legend(fontsize=6, ncol=2)
+    fig.suptitle(f"F8 — attribution margin and the ε-trimmed effect (split {split_seed})")
+    fig.tight_layout()
+    return _save(fig, "F8_attribution_margin", split_seed)
+
+
 def run(datasets: list[str], models: list[str], split_seed: int) -> list[str]:
+    """Every figure for one split.
+
+    F5 and F8 read the explanation tables, so they are skipped -- not failed -- when
+    ``tfmdm explanations`` has not been run for this split yet. The predictive figures
+    do not depend on them and should still render.
+    """
     paths.ensure_dirs(split_seed)
     summaries = pd.read_csv(paths.results_dir(split_seed) / "arm_summaries.csv")
-    return [
+    rendered = [
         f1_pareto(summaries, split_seed),
         f2_bars(summaries, split_seed),
         f3_threshold(datasets, models, split_seed),
         f4_explanation_stability(datasets, models, split_seed),
     ]
+    if (paths.results_dir(split_seed) / "explanation_multiplicity.csv").exists():
+        rendered.append(f5_explanation_against_prediction(split_seed))
+        rendered.append(f8_margin_sweep(split_seed))
+    return rendered

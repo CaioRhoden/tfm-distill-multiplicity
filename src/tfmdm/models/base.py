@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
+from ..config import HARD_ARMS
+
 EPS = 1e-7
 
 
@@ -21,13 +23,14 @@ def soft_cross_entropy(target: np.ndarray, pred: np.ndarray) -> float:
 def val_objective(arm: str, val_target: np.ndarray, val_pred: np.ndarray) -> float:
     """The quantity model selection minimises on the validation split.
 
-    The hard arm selects on validation AUROC against true labels (negated so that
-    lower is always better). The distilled arms select on soft cross-entropy against
+    The hard arm -- and the shuffled-label control, which is a hard arm with permuted
+    labels -- selects on validation AUROC against its own labels (negated so that lower
+    is always better). The distilled arms select on soft cross-entropy against
     the teacher's validation probabilities -- this is the validation step that keeps
     the distilled arms from ever touching a hard label, which is what decision D6
     requires for the comparison to be attributable.
     """
-    if arm == "hard":
+    if arm in HARD_ARMS:
         return -float(roc_auc_score(val_target.astype(int), val_pred))
     return soft_cross_entropy(val_target, val_pred)
 
