@@ -46,7 +46,6 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-import joblib
 import numpy as np
 import pandas as pd
 
@@ -56,6 +55,7 @@ from ..metrics import bootstrap as boot
 from ..metrics import explanation as expl
 from ..metrics import multiplicity as mult
 from ..models.explain import reconstruction_error, term_contributions
+from ..models.io import load_learner
 from ..stages import train as train_stage
 from . import grouping, shapes
 
@@ -175,7 +175,7 @@ def collect_cell(
         path = paths.model_artifact(dataset, model, arm, seed, split_seed)
         if not path.exists():
             continue
-        learner = joblib.load(path)
+        learner = load_learner(path)
 
         terms = term_contributions(learner, x_eval)
         # Plan 1.1: the decomposition is checked, not assumed -- before centring, when

@@ -30,12 +30,12 @@ is the size of the shift D3 removes, and a rank metric is not shift-invariant.
 
 from __future__ import annotations
 
-import joblib
 import numpy as np
 
 from .. import paths
 from ..config import load
 from ..models.explain import reconstruction_error, term_contributions
+from ..models.io import load_learner
 from ..stages import train as train_stage
 
 TOLERANCE = 1e-5
@@ -51,7 +51,7 @@ def probe_cell(dataset: str, model: str, arm: str, split_seed: int, seed: int) -
 
     ctx = train_stage.prepare(dataset, model, arm, split_seed)
     x = ctx.x_test.head(PROBE_ROWS)
-    learner = joblib.load(path)
+    learner = load_learner(path)
 
     terms = term_contributions(learner, x)
     raw = reconstruction_error(learner, x, terms)
@@ -66,7 +66,7 @@ def probe_cell(dataset: str, model: str, arm: str, split_seed: int, seed: int) -
         "dataset": dataset, "model": model, "arm": arm, "split_seed": split_seed,
         "seed": seed, "status": "ok",
         "n_terms": len(terms.names),
-        "n_probe_rows": int(len(x)),
+        "n_probe_rows": len(x),
         "device": str(getattr(learner, "device", "n/a")),
         "intercept": terms.intercept,
         "effective_intercept": centred.intercept,

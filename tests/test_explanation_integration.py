@@ -146,3 +146,48 @@ def test_grouping_a_nam_cell_is_lossless():
     mapping = grouping.group_map(DATASET, "nam", SPLIT_SEED, terms.names)
     grouped, _ = expl.group_terms(terms.values[None, :, :], terms.names, mapping)
     assert grouped[0].sum(axis=1) == pytest.approx(terms.values.sum(axis=1))
+
+
+# --- the artifacts must outlive the machine that produced them --------------------
+
+def test_a_cuda_trained_nam_loads_where_cuda_is_unavailable(monkeypatch):
+    """The reload risk named in the plan's assumptions, reproduced rather than assumed.
+
+    A NAM is fit on a GPU node and re-scored wherever there is capacity. torch records
+    the device each storage lived on and refuses to restore a CUDA storage when
+    ``torch.cuda.is_available()`` is False -- which is true both on a CPU-only node and
+    on a node whose driver is too old for the installed torch build. Faking that
+    condition is the only way to test the CPU path on a machine that has a working GPU.
+    """
+    import torch
+
+    from tfmdm.models.io import load_learner
+
+    path = paths.model_artifact(DATASET, "nam", "hard", SEED, SPLIT_SEED)
+    if not path.exists():
+        pytest.skip(f"{path} not present; run the sweep first")
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    learner = load_learner(path)
+
+    # Loading is only half of it: the model must then actually run. ``models.explain``
+    # re-resolves the pickled device attribute, which still says whatever it trained on.
+    x = _context("nam").x_test.head(50)
+    terms = term_contributions(learner, x)
+    assert terms.values.shape[0] == len(x)
+    assert reconstruction_error(learner, x, terms)["max_prob_error"] <= (
+        expl_stage.RESIDUAL_TOLERANCE
+    )
+
+
+def test_the_cpu_mapping_does_not_leak_out_of_the_load(monkeypatch):
+    """torch's deserialisation must be left exactly as it was found, even on failure."""
+    import torch
+
+    from tfmdm.models.io import _storages_on_cpu
+
+    original = torch.storage._load_from_bytes
+    with pytest.raises(RuntimeError), _storages_on_cpu():
+        assert torch.storage._load_from_bytes is not original
+        raise RuntimeError("boom")
+    assert torch.storage._load_from_bytes is original
