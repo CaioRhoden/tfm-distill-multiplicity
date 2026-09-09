@@ -37,6 +37,16 @@ def _add_split(parser: argparse.ArgumentParser, plural: bool = False) -> None:
                             help="Split replicate to act on (default: split.seed)")
 
 
+def _add_verbose(parser: argparse.ArgumentParser) -> None:
+    """Opt-in progress on stderr, for the stages that otherwise run silent for minutes.
+
+    stdout stays the machine-readable payload either way, so a caller that parses it is
+    unaffected by the flag.
+    """
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="Report progress on stderr while running")
+
+
 def _resolve_split(value: int | None) -> int:
     if value is not None:
         return int(value)
@@ -135,6 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--models", nargs="+", default=INTERPRETABLE)
     p.add_argument("--arms", nargs="+", default=ARMS)
     p.add_argument("--seed", type=int, default=0, help="Run seed to probe (default: 0)")
+    _add_verbose(p)
     _add_split(p)
 
     p = sub.add_parser("explanations",
@@ -146,10 +157,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Explain a random subsample of this many test rows (default: all)")
     p.add_argument("--no-shapes", action="store_true",
                    help="Skip the shape-function distance, which is the slow part")
+    _add_verbose(p)
     _add_split(p)
 
     p = sub.add_parser("compile-explanations",
                        help="Pool explanation multiplicity and join it to AUROC")
+    _add_verbose(p)
     _add_split(p, plural=True)
 
     p = sub.add_parser("combine",
@@ -192,6 +205,10 @@ def _groups(args) -> list[dict]:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     command = args.command
+
+    from .progress import set_enabled
+
+    set_enabled(getattr(args, "verbose", False))
 
     if command == "data":
         from .stages import data

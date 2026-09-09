@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from .. import paths
+from .. import paths, progress
 from ..config import load
 from ..metrics import bootstrap as boot
 from ..metrics import explanation as expl
@@ -163,6 +163,11 @@ def collect_cell(
         shape_columns = shapes.numeric_columns(ctx.x_train, model, column_groups)
         grids = {c: shapes.quantile_grid(ctx.x_train[c].to_numpy()) for c in shape_columns}
 
+    progress.log(
+        f"{dataset}/{model}/{arm} split{split_seed}: explaining {len(x_eval)} test rows"
+        f"{' (+ shape curves)' if with_shapes else ''}"
+    )
+
     per_model: list[tuple[list[str], np.ndarray]] = []
     per_model_terms: list[list[str]] = []
     intercepts: list[float] = []
@@ -171,7 +176,8 @@ def collect_cell(
     residual = 0.0
     found: list[int] = []
 
-    for seed in seed_list:
+    seed_list = list(seed_list)
+    for seed in progress.track(seed_list, "models scored", total=len(seed_list)):
         path = paths.model_artifact(dataset, model, arm, seed, split_seed)
         if not path.exists():
             continue
@@ -496,18 +502,31 @@ def run(datasets: list[str], models: list[str], arms: list[str], split_seed: int
         for model in models:
             collected: dict[str, CellExplanation] = {}
             for arm in arms:
+                label = f"{dataset}/{model}/{arm}"
                 try:
-                    cell = collect_cell(dataset, model, arm, split_seed, seed_list,
-                                        max_rows, with_shapes)
+                    with progress.phase(f"{label}: loading and reducing model set"):
+                        cell = collect_cell(dataset, model, arm, split_seed, seed_list,
+                                            max_rows, with_shapes)
                 except (FileNotFoundError, NotImplementedError) as exc:
+                    progress.log(f"{label}: SKIPPED -- {exc}")
                     cells.append({"dataset": dataset, "model": model, "arm": arm,
                                   "split_seed": split_seed, "error": str(exc)})
                     continue
+
                 collected[arm] = cell
-                cells.append(cell_row(cell))
-                summaries += cell_intervals(cell, n_boot)
+                row = cell_row(cell)
+                cells.append(row)
+                progress.log(
+                    f"{label}: attribution ambiguity {row['attribution_ambiguity']:.3f}, "
+                    f"discrepancy {row['attribution_discrepancy']:.3f}, "
+                    f"sign flips {row['sign_flip_rate']:.3f} "
+                    f"over {row['n_groups']} terms"
+                )
+                with progress.phase(f"{label}: BCa intervals ({n_boot} resamples)"):
+                    summaries += cell_intervals(cell, n_boot)
                 sweeps += margin_sweep_rows(cell)
-                comparisons += compare_to_predictive(cell, cfg)
+                with progress.phase(f"{label}: E1 against predictive multiplicity"):
+                    comparisons += compare_to_predictive(cell, cfg)
 
             # Plan 1.3: the grouping map is an artifact in its own right -- it records
             # the granularity every number in these tables was measured at. Written once
@@ -520,7 +539,8 @@ def run(datasets: list[str], models: list[str], arms: list[str], split_seed: int
                                grouping.group_map(dataset, model, split_seed, terms))
 
             if "distilled" in collected and "hard" in collected:
-                comparisons += compare_arms(collected["distilled"], collected["hard"], cfg)
+                with progress.phase(f"{dataset}/{model}: E2 distilled vs hard"):
+                    comparisons += compare_arms(collected["distilled"], collected["hard"], cfg)
 
     _holm_within(comparisons, "E1", lambda c: True)
     for metric in E2_METRICS:
@@ -536,6 +556,7 @@ def run(datasets: list[str], models: list[str], arms: list[str], split_seed: int
     }
     for name, rows in frames.items():
         pd.DataFrame(rows).to_csv(out / name, index=False)
+        progress.log(f"wrote {out / name} ({len(rows)} rows)")
     (out / "explanation_multiplicity.json").write_text(
         json.dumps({"split_seed": split_seed, "cells": cells,
                     "comparisons": comparisons}, indent=2, default=float)
@@ -599,7 +620,9 @@ def combine(split_seeds: list[int]) -> dict:
 
     for name in ("explanation_summaries.csv", "explanation_margin_sweep.csv",
                  "explanation_comparisons.csv"):
-        _pool(split_seeds, name).to_csv(paths.RESULTS / f"all_{name}", index=False)
+        pooled = _pool(split_seeds, name)
+        pooled.to_csv(paths.RESULTS / f"all_{name}", index=False)
+        progress.log(f"pooled {len(pooled)} rows -> results/all_{name}")
 
     keys = ["dataset", "model", "arm", "split_seed"]
     summaries = _pool(split_seeds, "arm_summaries.csv")
@@ -612,9 +635,14 @@ def combine(split_seeds: list[int]) -> dict:
     columns += available
     compiled = compiled[columns + [c for c in compiled.columns if c not in columns]]
     compiled.to_csv(paths.RESULTS / "explanation_metrics.csv", index=False)
+    progress.log(f"wrote results/explanation_metrics.csv ({len(compiled)} rows)")
 
     across = across_splits(_pool(split_seeds, "explanation_comparisons.csv"), len(split_seeds))
     across.to_csv(paths.RESULTS / "across_splits.csv", index=False)
+    progress.log(
+        f"wrote results/across_splits.csv ({len(across)} rows, "
+        f"{int(across['meets_majority_rule'].sum())} meeting the majority rule)"
+    )
 
     return {"n_splits": len(split_seeds), "n_rows": len(compiled),
             "n_across_split_rows": len(across),

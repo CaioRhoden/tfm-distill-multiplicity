@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .. import paths
+from .. import paths, progress
 from ..config import load
 from ..models.explain import reconstruction_error, term_contributions
 from ..models.io import load_learner
@@ -89,7 +89,17 @@ def run(datasets: list[str], models: list[str], arms: list[str], split_seed: int
         probe_seed = seed if seed in seed_list else seed_list[0]
         for model in models:
             for arm in arms:
-                rows.append(probe_cell(dataset, model, arm, split_seed, probe_seed))
+                row = probe_cell(dataset, model, arm, split_seed, probe_seed)
+                if row["status"] == "ok":
+                    progress.log(
+                        f"{dataset}/{model}/{arm} s{probe_seed}: device={row['device']}, "
+                        f"{row['n_terms']} terms, offset removed {row['offset_removed']:+.4f}, "
+                        f"prob error {row['max_prob_error_centred']:.2e} "
+                        f"-> {'PASS' if row['passes'] else 'FAIL'}"
+                    )
+                else:
+                    progress.log(f"{dataset}/{model}/{arm}: {row['status']} ({row['path']})")
+                rows.append(row)
 
     checked = [r for r in rows if r["status"] == "ok"]
     return {
