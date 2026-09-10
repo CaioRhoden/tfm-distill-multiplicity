@@ -111,7 +111,7 @@ Everything split-dependent lives under `artifacts/split{K}/` and `results/split{
 - writes `configs/tuned/split{K}/{ds}_{model}_{arm}.yaml` — the winning hyperparameters, committed to the repo and read by every `train` run of that cell family.
 - writes `..._trials.json` — every trial tried, for auditing the search.
 
-**`train` / `train:group` / `sweep` / `slurm`** — Phase 4.1, fitting the interpretable models (EBM/NAM) on either hard labels or distilled soft labels.
+**`train` / `train:group` / `sweep` / `slurm`** — Phase 4.1, fitting the interpretable models (EBM, NAM, logistic regression) on either hard labels or distilled soft labels.
 - reads `artifacts/split{K}/views/`, `splits/`, softlabels (for `distilled`), `configs/tuned/split{K}/` (if a tuned config exists).
 - writes `artifacts/split{K}/preds/{ds}_{model}_{arm}_s{seed}.parquet` — that seed's val/test predicted probabilities, the input `analyze` scores.
 - writes `artifacts/split{K}/models/{ds}_{model}_{arm}_s{seed}.joblib` — the fitted model itself, for later inspection.
@@ -205,7 +205,7 @@ its 30 run seeds. 50 rows: 2 datasets x 5 arms x 5 splits.
 | Column | Meaning |
 | --- | --- |
 | `dataset` | `adult` or `taiwan` |
-| `model` | `ebm`, `nam`, or `tabicl` |
+| `model` | `ebm`, `nam`, `logreg`, or `tabicl` |
 | `arm` | `hard` (trained on the ground-truth labels), `distilled` (trained on TabICLv2 soft labels), or `incontext` (the TabICLv2 predictions themselves) |
 | `split_seed` | which 60/20/20 split replicate (0-4) the cell belongs to |
 | `n_seeds` | run seeds trained in the cell (30) |
@@ -279,15 +279,16 @@ rather than term *shape*.
 **Contributions are centred per term before comparison.** A constant offset shared by
 every row is absorbed by the intercept and explains nothing; leaving it in would
 report the intercept's arbitrary split between terms as disagreement. This is a no-op
-for EBM, whose term scores are already centred, and it binds for NAM.
+for EBM, whose term scores are already centred, and it binds for NAM and for logreg
+(whose one-hot columns carry their level frequency as a mean).
 
 `mean_term_set_jaccard` is an addition to the issue's metric set, and the last two
 decisions above are departures from the reference implementation in it.
 
 ### `results/explanation_metrics.csv`
 
-The compiled table, one row per (dataset, model, arm, split_seed) — 40 rows: 2
-datasets x 2 models x 2 arms x 5 splits. The explanation metrics above, plus
+The compiled table, one row per (dataset, model, arm, split_seed) — 60 rows: 2
+datasets x 3 models x 2 arms x 5 splits. The explanation metrics above, plus
 `n_terms_union` / `n_interaction_terms_union` / `mean_n_terms` for context, plus the
 accuracy and predictive multiplicity of the same model set (`auroc_mean`, `auroc_std`,
 `mean_auroc_point` and its interval, `ambiguity`, `discrepancy`) joined from

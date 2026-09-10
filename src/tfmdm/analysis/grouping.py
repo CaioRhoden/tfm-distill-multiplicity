@@ -27,6 +27,7 @@ from collections.abc import Iterable
 import joblib
 
 from .. import paths
+from ..config import uses_encoded_view
 
 
 def _one_hot_names(encoder, categorical: list[str]) -> dict[str, list[str]]:
@@ -84,14 +85,20 @@ def identity_groups(names: Iterable[str]) -> dict[str, str]:
 
 
 def group_map(dataset: str, model: str, split_seed: int, names: Iterable[str]) -> dict[str, str]:
-    """The map for one family, over the term names that family actually produced."""
-    if model == "nam":
+    """The map for one family, over the term names that family actually produced.
+
+    Every family on the ``encoded`` view -- the NAM and the linear baseline alike --
+    carries one term per one-hot column and is grouped back to parent features. The
+    EBM's native view is left alone.
+    """
+    if uses_encoded_view(model):
         mapping = encoded_groups(dataset, split_seed)
         unknown = [n for n in names if n not in mapping]
         if unknown:
             raise KeyError(
-                f"NAM terms absent from {dataset}'s split{split_seed} encoder: {unknown[:5]}. "
-                "The model was fitted against a different feature view than the one on disk."
+                f"{model} terms absent from {dataset}'s split{split_seed} encoder: "
+                f"{unknown[:5]}. The model was fitted against a different feature view "
+                "than the one on disk."
             )
         return {name: mapping[name] for name in names}
     return identity_groups(names)

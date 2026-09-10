@@ -30,6 +30,37 @@ def _sample(space: dict, rng: np.random.Generator) -> dict:
     return {key: values[int(rng.integers(len(values)))] for key, values in space.items()}
 
 
+# How many times a repeated draw is redrawn before the search accepts it. Sampling is
+# with replacement, so on a small grid -- logreg's is six points -- a plain loop of
+# n_configs draws spends most of its budget refitting configurations it has already
+# scored. Redrawing is bounded rather than exhaustive: past this many collisions the
+# grid is effectively covered, and the search stops rather than looping forever on a
+# space smaller than n_configs.
+MAX_RESAMPLE_ATTEMPTS = 50
+
+
+def _distinct_configs(space: dict, base: dict, n_configs: int,
+                      rng: np.random.Generator) -> list[dict]:
+    """Up to ``n_configs`` distinct parameter sets, drawn in the order sampled.
+
+    The draw order is unchanged from a plain sampling loop -- collisions are skipped,
+    never reordered -- so a space large enough that collisions do not occur yields
+    exactly the configs the previous behaviour did, at the same tuning seed.
+    """
+    configs: list[dict] = []
+    seen: set[str] = set()
+    attempts = 0
+    while len(configs) < n_configs and attempts < n_configs + MAX_RESAMPLE_ATTEMPTS:
+        attempts += 1
+        params = {**base, **_sample(space, rng)}
+        key = json.dumps(params, sort_keys=True, default=str)
+        if key in seen:
+            continue
+        seen.add(key)
+        configs.append(params)
+    return configs
+
+
 def run(dataset: str, model: str, arm: str, split_seed: int,
         n_configs: int | None = None) -> dict:
     paths.ensure_dirs(split_seed)
@@ -49,8 +80,7 @@ def run(dataset: str, model: str, arm: str, split_seed: int,
     base = to_dict(cfg.model.params)
     trials: list[dict] = []
 
-    for trial in range(n_configs):
-        params = {**base, **_sample(space, rng)}
+    for trial, params in enumerate(_distinct_configs(space, base, n_configs, rng)):
         learner = build(model, seed=int(cfg.tune.seed), params=params)
         learner.fit(x_train, t_train, x_val, t_val, arm=arm)
         score = val_objective(arm, t_val, learner.predict_proba(x_val))

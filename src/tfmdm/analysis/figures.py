@@ -32,6 +32,7 @@ ARM_COLOR = {"hard": "#4C72B0", "distilled": "#DD8452", "tabicl": "#8172B3",
 ARM_LABEL = {"hard": "Hard labels", "distilled": "Distilled (TabICLv2)", "tabicl": "TabICLv2",
              "shuffled": "Shuffled labels (control)"}
 MARKER = {"ebm": "o", "nam": "s", "logreg": "^", "tabicl": "D"}
+LINESTYLE = {"ebm": "-", "nam": "--", "logreg": ":", "tabicl": "-."}
 
 
 def _save(fig: plt.Figure, name: str, split_seed: int) -> str:
@@ -270,7 +271,7 @@ def f8_margin_sweep(split_seed: int) -> str:
         for (dataset, model, arm), group in sweep.groupby(["dataset", "model", "arm"]):
             group = group.sort_values("epsilon")
             style = {"color": ARM_COLOR.get(arm, "#888"),
-                     "ls": "-" if model == "ebm" else "--",
+                     "ls": LINESTYLE.get(model, "--"),
                      "marker": MARKER.get(model, "o"), "ms": 4,
                      "label": f"{dataset}·{model.upper()}·{arm}"}
             axes[0].plot(group["epsilon"], group["share_kept"], **style)

@@ -42,6 +42,24 @@ def load(dataset: str, model: str | None = None, split_seed: int | None = None) 
     return cfg  # type: ignore[return-value]
 
 
+def model_view(model: str) -> str:
+    """The feature view a family consumes, read from its own config.
+
+    Several stages need to branch on this -- one-hot columns have to be grouped back to
+    their parent feature, and a "shape function" over {0, 1} is a coefficient rather
+    than a curve. Branching on the *view* rather than on the model name keeps that
+    question asked of the thing it is actually about: a fourth encoded-view family then
+    needs no edit at all, where a name test would need one per branch and would
+    mis-group silently if any were missed.
+    """
+    return str(OmegaConf.load(paths.CONFIGS / "model" / f"{model}.yaml").view)
+
+
+def uses_encoded_view(model: str) -> bool:
+    """True for the families fitted on standardised numerics plus one-hot categoricals."""
+    return model_view(model) == "encoded"
+
+
 def split_seeds(cfg: DictConfig) -> list[int]:
     """Every split seed the experiment covers, primary split first."""
     return [int(s) for s in cfg.split.seeds]

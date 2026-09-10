@@ -8,7 +8,7 @@ env:
 vars:
   RUN: uv run tfmdm
   DATASETS: adult taiwan
-  MODELS: ebm nam
+  MODELS: ebm nam logreg
   ARMS: hard distilled
   # Split replicates. Override per invocation: SPLIT_SEEDS='0 1' task data
   SPLIT_SEEDS: '{{.SPLIT_SEEDS | default "0"}}'

@@ -9,7 +9,9 @@ import sys
 from typing import Sequence
 
 DATASETS = ["adult", "taiwan"]
-INTERPRETABLE = ["ebm", "nam"]
+# Every family the sweep trains and the analysis measures. logreg is baseline B0 and a
+# measured family in its own right: it carries the same hard-vs-distilled comparison.
+INTERPRETABLE = ["ebm", "nam", "logreg"]
 ARMS = ["hard", "distilled"]
 CONTROL_ARMS = ["shuffled"]
 ALL_ARMS = ARMS + CONTROL_ARMS
@@ -93,14 +95,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("tune", help="Phase 4.2: one random search per (dataset, model, arm, split)")
     p.add_argument("--dataset", required=True, choices=DATASETS)
-    p.add_argument("--model", required=True, choices=INTERPRETABLE + ["logreg"])
+    p.add_argument("--model", required=True, choices=INTERPRETABLE)
     p.add_argument("--arm", required=True, choices=ALL_ARMS)
     p.add_argument("--n-configs", type=int, default=None)
     _add_split(p)
 
     p = sub.add_parser("train", help="Phase 4.1: one cell (single seed), for debugging")
     p.add_argument("--dataset", required=True, choices=DATASETS)
-    p.add_argument("--model", required=True, choices=INTERPRETABLE + ["logreg"])
+    p.add_argument("--model", required=True, choices=INTERPRETABLE)
     p.add_argument("--arm", required=True, choices=ALL_ARMS)
     p.add_argument("--seed", type=int, required=True)
     p.add_argument("--overwrite", action="store_true")
@@ -109,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("train-group",
                        help="Phase 4.1: every run seed of one (dataset, model, arm, split)")
     p.add_argument("--dataset", required=True, choices=DATASETS)
-    p.add_argument("--model", required=True, choices=INTERPRETABLE + ["logreg"])
+    p.add_argument("--model", required=True, choices=INTERPRETABLE)
     p.add_argument("--arm", required=True, choices=ALL_ARMS)
     p.add_argument("--seeds", nargs="+", type=int, default=None,
                    help="Run seeds (default: all of model_seeds)")

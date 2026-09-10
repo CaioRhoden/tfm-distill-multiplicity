@@ -4,12 +4,15 @@ One cell is one (dataset, model, arm, split): the 30 models that arm trained, co
 against each other on how they *explain* the shared test set. Nothing is retrained --
 this reads the ``.joblib`` artifacts the sweep already wrote.
 
-Two hypotheses are served, and each is a *within-family* comparison. EBM and NAM are
-never compared to each other: they differ in feature space, in structure (GA2M with
-interactions against a strictly univariate GAM) and in internal ensembling, so a gap
-between them would be a statement about those three choices rather than about the
-families. Both arms of a within-family delta share all three exactly, so none of them
-can bias it.
+Two hypotheses are served, and each is a *within-family* comparison. The three families
+-- EBM, NAM and the linear baseline -- are not compared to each other here: EBM and NAM
+differ in feature space, in structure (GA2M with interactions against a strictly
+univariate GAM) and in internal ensembling, so a gap between them would be a statement
+about those three choices rather than about the families. Both arms of a within-family
+delta share all three exactly, so none of them can bias it. (NAM against logreg *is*
+matched on all three -- same view, same univariate structure, no ensembling -- and is
+a legitimate comparison, but it answers a different question, about flexibility rather
+than about distillation; see plans/logreg.md.)
 
   E1  explanation multiplicity exceeds *predictive* multiplicity on the same model set
       -- seeds agree on decisions while disagreeing on reasons
@@ -50,7 +53,7 @@ import numpy as np
 import pandas as pd
 
 from .. import paths, progress
-from ..config import load
+from ..config import load, model_view, uses_encoded_view
 from ..metrics import bootstrap as boot
 from ..metrics import explanation as expl
 from ..metrics import multiplicity as mult
@@ -159,7 +162,7 @@ def collect_cell(
     grids: dict[str, np.ndarray] = {}
     if with_shapes:
         column_groups = grouping.group_map(dataset, model, split_seed, list(ctx.x_train.columns)) \
-            if model == "nam" else {}
+            if uses_encoded_view(model) else {}
         shape_columns = shapes.numeric_columns(ctx.x_train, model, column_groups)
         grids = {c: shapes.quantile_grid(ctx.x_train[c].to_numpy()) for c in shape_columns}
 
@@ -535,7 +538,7 @@ def run(datasets: list[str], models: list[str], arms: list[str], split_seed: int
             if collected:
                 terms = sorted(set().union(*(set(n) for cell in collected.values()
                                              for n in cell.per_model_terms)))
-                grouping.write(dataset, "encoded" if model == "nam" else "raw", split_seed,
+                grouping.write(dataset, model_view(model), split_seed,
                                grouping.group_map(dataset, model, split_seed, terms))
 
             if "distilled" in collected and "hard" in collected:
@@ -629,10 +632,17 @@ def _merge_into(path, rows: list[dict], keys: tuple[str, ...]) -> pd.DataFrame:
 def _holm_within(comparisons: list[dict], hypothesis: str, predicate) -> None:
     """Holm-correct one metric family, in place.
 
-    The family is the set of cells tested on *one* metric within one split: 2 datasets
-    x 2 families. Splits are replicates of the same experiment rather than extra
+    The family is the set of cells tested on *one* metric within one split: every
+    (dataset, model family) this invocation covered -- 2 datasets x 3 families under
+    the defaults. Splits are replicates of the same experiment rather than extra
     hypotheses, so pooling them into one correction would penalise the design for being
     repeated -- cross-split agreement is reported descriptively by ``combine``.
+
+    Note that the family is what *this run* computed, not what ends up in the merged
+    file. Running ``--models logreg`` on its own therefore corrects it against nothing
+    and leaves the rows already on disk corrected over the narrower family they were
+    computed in, which understates the correction for the table as a whole. Recompute
+    all families in one invocation before reading the ``holm_reject`` column.
     """
     family = [c for c in comparisons
               if c["hypothesis"] == hypothesis and predicate(c) and np.isfinite(c["p_value"])]

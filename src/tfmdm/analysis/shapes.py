@@ -27,6 +27,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from ..config import uses_encoded_view
 from ..models.explain import TermContributions, term_contributions
 
 N_GRID = 100
@@ -36,12 +37,12 @@ LOW_PERCENTILE, HIGH_PERCENTILE = 1.0, 99.0
 def numeric_columns(x: pd.DataFrame, model: str, groups: dict[str, str]) -> list[str]:
     """The columns a shape function is defined on, per family.
 
-    For the NAM the ``encoded`` view has already one-hot expanded the categoricals, so
-    a numeric column is exactly one that maps to itself under the D4 grouping. For the
+    On the ``encoded`` view the categoricals have already been one-hot expanded, so a
+    numeric column is exactly one that maps to itself under the D4 grouping. For the
     EBM the view is native, so numeric dtype is the test -- and pair terms are excluded
     here regardless, being surfaces rather than curves.
     """
-    if model == "nam":
+    if uses_encoded_view(model):
         return [c for c in x.columns if groups.get(c) == c]
     return [c for c in x.columns if pd.api.types.is_numeric_dtype(x[c])]
 

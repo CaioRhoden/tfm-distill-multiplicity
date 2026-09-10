@@ -90,6 +90,25 @@ def _ebm_terms(learner: Any, x: pd.DataFrame) -> TermContributions:
     return TermContributions(names, orders, values, intercept)
 
 
+def _logreg_terms(learner: Any, x: pd.DataFrame) -> TermContributions:
+    """The linear model's own decomposition: one term per column, ``coef_j * x_j``.
+
+    Exact by construction rather than by approximation -- a logistic regression *is* an
+    additive model in the logit, so there is nothing to extract and nothing to fit. The
+    reconstruction check of plan step 1.1 is therefore a check on the harness (column
+    order, the view the model was fitted against) rather than on the decomposition.
+
+    Columns are taken in the order the model was fitted in, not the order they arrive
+    in, so a reordered frame cannot silently pair a coefficient with the wrong feature.
+    """
+    model = learner.model
+    assert model is not None, "LogisticRegression was never fitted"
+    coefficients = np.asarray(model.coef_, dtype=float).ravel()
+    values = np.asarray(x[learner.columns], dtype=float) * coefficients
+    intercept = float(np.asarray(model.intercept_, dtype=float).ravel()[0])
+    return TermContributions(list(learner.columns), [1] * len(learner.columns), values, intercept)
+
+
 def _usable_device(learner: Any) -> torch.device:
     """The device this NAM can actually run on now, not the one it was trained on.
 
@@ -178,7 +197,11 @@ def term_contributions(learner: Any, x: pd.DataFrame) -> TermContributions:
         return _ebm_terms(learner, x)
     if hasattr(learner, "net") and hasattr(learner, "columns"):
         return _nam_terms(learner, x)
+    # Checked last: `coef_` is the weakest of the three signatures, so anything with a
+    # richer decomposition of its own gets to claim the model first.
+    if hasattr(getattr(learner, "model", None), "coef_") and hasattr(learner, "columns"):
+        return _logreg_terms(learner, x)
     raise NotImplementedError(
         f"{type(learner).__name__} exposes no additive term decomposition; explanation "
-        "multiplicity is only defined for the additive families (EBM, NAM)."
+        "multiplicity is only defined for the additive families (EBM, NAM, logreg)."
     )

@@ -1,7 +1,18 @@
 name: logreg
-view: encoded
+view: encoded                # standardised numerics + one-hot categoricals, as the NAM
 params:
   C: 1.0
-  max_iter: 2000
+  penalty: l2                # D-L2: never None. The one-hot block is collinear (the
+                             # encoder has no drop=), so an unpenalised fit has a
+                             # non-unique coefficient vector and would fabricate
+                             # explanation multiplicity at zero predictive multiplicity.
+  solver: lbfgs
+  max_iter: 5000             # the distilled arm fits on 2x rows (expand_soft_targets)
+  tol: 0.0001
 search_space:
-  C: [0.01, 0.1, 1.0, 10.0]
+  # C only. class_weight is deliberately absent: `balanced` derives its weights from
+  # the frame it is fitted on, and in the distilled arm that frame is the doubled,
+  # relabelled one from expand_soft_targets, whose class balance is ~50/50 by
+  # construction. The same setting would therefore mean different things in the two
+  # arms, which is exactly the kind of arm-dependent difference the design holds fixed.
+  C: [0.001, 0.01, 0.1, 1.0, 10.0, 100.0]
