@@ -230,7 +230,12 @@ def aggregate(datasets: list[str], models: list[str], arms: list[str],
         seed_list = [int(s) for s in cfg.model_seeds]
         for model in models:
             collected: dict[str, ArmResult] = {}
+            # tabicl is only ever run in-context; hard/distilled retrain the
+            # interpretable models, so the two families never share an arm.
+            valid_arms = ["incontext"] if model == "tabicl" else [a for a in arms if a != "incontext"]
             for arm in arms:
+                if arm not in valid_arms:
+                    continue
                 try:
                     collected[arm] = collect_arm(dataset, model, arm, split_seed, seed_list)
                 except FileNotFoundError as exc:
